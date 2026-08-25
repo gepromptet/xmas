@@ -22,6 +22,7 @@ from xmas.optimization.graph_updater import GraphUpdater
 from xmas.optimization.synthesis import LLMPromptSynthesizer, MechanicalSynthesizer, Rewrite
 from xmas.optimization.topology import (
     TopologyBudget,
+    add_agent,
     crossover,
     cycles,
     is_valid,
@@ -104,6 +105,41 @@ def _build(names: list[str], edges: list[tuple[str, str]]) -> MAS:
     """Construct a system from a bare topology, which is the validity predicate."""
     agents = [Agent(name, f"{name} {{query}}", output=f"{name}_out") for name in names]
     return MAS(agents=agents, edges=mas_edges(names, edges, "solver"), llm=MockLLM(lambda prompt: "ok"))
+
+
+def test_a_one_agent_system_can_grow() -> None:
+    # Defect reproduction. `add_agent` used to pick its predecessor from every
+    # agent including the terminal, which on a one-agent system closed a cycle
+    # between the two. Under an acyclic budget every such mutation was discarded,
+    # so the search silently could not grow past its first node. A live run is
+    # what surfaced it: three steps of topology search that accepted nothing.
+    budget = TopologyBudget(min_agents=1, max_agents=3, max_edges=6)
+    rng = random.Random(0)
+
+    assert add_agent(["solver"], [], rng) == (["solver", "agent_1"], [("agent_1", "solver")])
+
+    grown = sum(1 for _ in range(200) if len(mutate(["solver"], [], budget, rng, 1, "solver")[0]) > 1)
+    assert grown > 0, "a one-agent system must be able to gain an agent"
+
+
+@pytest.mark.parametrize(
+    ("names", "edges"),
+    [
+        (["solver"], []),
+        (["a", "b"], [("a", "b")]),
+        (["a", "b", "c"], [("a", "b"), ("b", "c")]),
+    ],
+)
+def test_a_new_agent_is_never_wired_into_a_cycle_with_the_terminal(
+    names: list[str], edges: list[tuple[str, str]]
+) -> None:
+    rng = random.Random(1)
+    grown_names, grown_edges = add_agent(names, edges, rng)
+    new = grown_names[-1]
+    terminal = terminals(names, edges)[0]
+
+    assert (new, terminal) in grown_edges
+    assert (terminal, new) not in grown_edges
 
 
 def test_a_retry_loop_gets_both_its_entry_and_its_exit_named() -> None:

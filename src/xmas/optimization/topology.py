@@ -264,19 +264,29 @@ def rewire_edge(names: list[str], edges: Edges, rng: random.Random) -> Edges:
 
 
 def add_agent(names: list[str], edges: Edges, rng: random.Random) -> tuple[list[str], Edges]:
-    """Insert a new agent downstream of an existing one.
+    """Insert a new agent upstream of the terminal.
 
-    The new agent is wired after a randomly chosen predecessor and before the
-    current terminal, which is the seed's shape: a node arrives with somewhere to
-    read from and somewhere to write to, so the candidate stays connected without
-    a repair pass.
+    The new agent is wired before the current terminal and, where there is one to
+    spare, after a randomly chosen other agent. That is the seed's shape: a node
+    arrives with somewhere to read from and somewhere to write to, so the
+    candidate stays connected without a repair pass.
+
+    The predecessor is never the terminal itself. Wiring it there would close a
+    cycle between the two, which fails an acyclic budget, so every mutation that
+    drew this operator on a one-agent system used to be discarded and the search
+    could not grow past its first node. With no other agent available the new one
+    simply has no predecessor, and becomes the entry.
     """
     name = next_name(names)
     terminal = terminals(names, edges)
     if not terminal:
         return list(names), list(edges)
-    predecessor = rng.choice([candidate for candidate in names if candidate != terminal[0]] or names)
-    return [*names, name], sorted({*edges, (predecessor, name), (name, terminal[0])})
+
+    grown = {*edges, (name, terminal[0])}
+    others = [candidate for candidate in names if candidate != terminal[0]]
+    if others:
+        grown.add((rng.choice(others), name))
+    return [*names, name], sorted(grown)
 
 
 def remove_agent(names: list[str], edges: Edges, rng: random.Random) -> tuple[list[str], Edges]:
