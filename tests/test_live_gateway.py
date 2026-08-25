@@ -90,7 +90,12 @@ def test_the_quickstart_runs_against_the_gateway(live_llm: APILLM) -> None:
     answer = mas("What is 17 * 23?")
     trace = mas.last_trace
 
-    assert "391" in answer
+    # What is checked is the wiring, not the arithmetic. `llama-3.1-8b` gets
+    # 17 * 23 wrong perhaps a third of the time, so asserting the right number
+    # made this fail intermittently against a gateway that was working perfectly.
+    # A live wiring check that is also a model-quality check reports the wrong
+    # thing when it goes red.
+    assert any(character.isdigit() for character in answer), f"the terminal returned no number: {answer!r}"
     assert trace is not None
     assert trace.agents == ("solver", "checker")
     assert trace.usage.total_tokens > 0
