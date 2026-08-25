@@ -6,7 +6,7 @@ Founding premise: single-prompt optimization is the N=1 case of multi-agent-syst
 
 **P2. Optimizers act through the Task, never around it.** The contract is a narrow evaluate; any optimizer runs on any task. Evaluation strategy (generation-based vs. likelihood probing) is a Task-level concern, invisible to optimizers: a probing Task can wrap any other Task and every optimizer runs unchanged.
 
-**P3. One LLM interface owns all inference concerns.** Backends (API, vLLM, local), caching, concurrency, and token metering live in the LLM layer and nowhere else. xmas adds score() as generate()'s sibling (teacher-forced logprob scoring of a fixed continuation, with assistant-token masking as a standalone utility) and per-node model binding.
+**P3. One LLM interface owns all inference concerns.** Backends (API, vLLM, local), caching, concurrency, and token metering live in the LLM layer and nowhere else. xmas adds score() as generate()'s sibling (teacher-forced logprob scoring of a fixed continuation, with assistant-token masking as a standalone utility) and per-node model binding. score() is the framework's one probing primitive: ranking a fixed set of options by their first token is a different measurement and is deliberately not part of the research path, so no interface for it exists here.
 
 **P4. New methods are new components, not new frameworks.** The optimization loop decomposes into Attributors (rollout plus reward to per-component credit) and per-component-type Updaters (a promptolution optimizer is a prompt Updater for one node; topology optimization is a graph Updater), orchestrated by a MAS optimizer. New research ships as a new Attributor or a new Updater.
 
