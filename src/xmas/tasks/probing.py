@@ -746,6 +746,27 @@ class AgreementReadout:
         )
 
 
+def materialize(predictor: MAS, candidates: Sequence[Prompt]) -> list[MAS]:
+    """Turn encoded prompt sets back into the systems they describe.
+
+    A candidate travels through promptolution as a string, but decoding a reference
+    pool means actually running each one, and the estimator's denominator assumes the
+    pool's sources were drawn uniformly over exactly this population. Handing the pool
+    builder a single system standing in for all of them would make the mixture that
+    ``q̃`` averages describe a proposal the references did not come from, and the
+    weights would then correct towards the wrong target.
+
+    Args:
+        predictor: The system the prompt sets belong to; supplies topology and models.
+        candidates: Encoded prompt sets.
+
+    Returns:
+        One system per candidate, sharing ``predictor``'s structure and models.
+    """
+    names = list(predictor.agents)
+    return [predictor.copy(prompts=decode_prompts(str(prompt), names)) for prompt in candidates]
+
+
 def measure_agreement(
     task: MASTask,
     predictor: MAS,
@@ -768,7 +789,8 @@ def measure_agreement(
         task: The task to evaluate against.
         predictor: The MAS the candidate prompt sets belong to.
         candidates: Encoded prompt sets, one per candidate.
-        references: A pool to reuse. ``None`` decodes a fresh one.
+        references: A pool to reuse. ``None`` decodes a fresh one, drawing its
+            sources uniformly over the whole candidate set.
         k: Reference budget per input. ``None`` uses the whole pool.
         refs_per_input: References to decode per input when building a pool.
         seed: Seed for the pool's source draw.
@@ -786,7 +808,14 @@ def measure_agreement(
     generated = task.evaluate(list(candidates), predictor=predictor)
 
     xs, ys = task.subsample()
-    pool = references or ReferencePool.generate(task, [predictor], xs, ys, refs_per_input=refs_per_input, seed=seed)
+    pool = references or ReferencePool.generate(
+        task,
+        materialize(predictor, candidates),
+        xs,
+        ys,
+        refs_per_input=refs_per_input,
+        seed=seed,
+    )
     probed = ProbingTask(task, pool, k=k).evaluate(list(candidates), predictor=predictor)
 
     return AgreementReadout(

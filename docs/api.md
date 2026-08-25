@@ -110,6 +110,7 @@ share of the *population's* probability mass it puts on references that scored w
     options:
       members:
         - measure_agreement
+        - materialize
         - importance_weights
         - rank_agreement
 

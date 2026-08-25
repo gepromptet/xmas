@@ -11,6 +11,7 @@ from xmas.tasks.probing import (
     Reference,
     ReferencePool,
     importance_weights,
+    materialize,
     measure_agreement,
     rank_agreement,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "Reference",
     "ReferencePool",
     "importance_weights",
+    "materialize",
     "measure_agreement",
     "rank_agreement",
 ]

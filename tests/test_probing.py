@@ -23,6 +23,7 @@ from xmas.tasks.probing import (
     Reference,
     ReferencePool,
     importance_weights,
+    materialize,
     measure_agreement,
     rank_agreement,
 )
@@ -388,11 +389,14 @@ def test_the_readout_reports_perfect_agreement_when_probing_tracks_generation() 
     mas = single_agent(llm, "good: {query}")
     task = GSM8KTask(SLICE)
 
+    # refs_per_input=4 so that both candidates author references: a pool drawn
+    # entirely from the bad one carries no reward at all, and then there is nothing
+    # for either estimator to rank.
     readout = measure_agreement(
         task,
         mas,
         [Prompt("good: {query}"), Prompt("bad: {query}")],
-        refs_per_input=1,
+        refs_per_input=4,
         seed=0,
     )
 
@@ -515,3 +519,33 @@ def test_the_readout_reports_decoded_tokens_per_probed_token() -> None:
     )
 
     assert readout.speedup == pytest.approx(20.0)
+
+
+def test_the_readout_draws_references_from_every_candidate_not_just_the_incumbent() -> None:
+    """The estimator divides by a uniform mixture over all M, so the pool must be one.
+
+    Building the pool from a single system would make q̃ describe a proposal the
+    references did not come from, and the weights would correct towards the wrong
+    target. The prompt each candidate carries is echoed into its output, so the
+    reference's own text says which candidate authored it.
+    """
+    llm = ScoringLLM(responder=lambda prompt: f"answer from {prompt.split(':')[0]}")
+    mas = single_agent(llm, "a: {query}")
+    task = GSM8KTask(SLICE)
+    candidates = [Prompt("a: {query}"), Prompt("b: {query}"), Prompt("c: {query}")]
+
+    pool = ReferencePool.generate(task, materialize(mas, candidates), task.xs, task.ys, refs_per_input=6, seed=1)
+
+    authors = {reference.completion.removeprefix("answer from ") for reference in pool.references}
+    assert authors == {"a", "b", "c"}
+
+
+def test_materialize_keeps_the_structure_and_only_swaps_prompts() -> None:
+    llm = ScoringLLM()
+    mas = single_agent(llm, "original: {query}")
+
+    rebuilt = materialize(mas, [Prompt("replaced: {query}")])
+
+    assert rebuilt[0].agents["solver"].prompt == "replaced: {query}"
+    assert rebuilt[0].structure == mas.structure
+    assert mas.agents["solver"].prompt == "original: {query}", "the original is untouched"
