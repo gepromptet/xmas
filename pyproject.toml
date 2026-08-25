@@ -19,7 +19,15 @@ classifiers = [
 # promptolution is a hard dependency, not a family resemblance: xmas subclasses its
 # base classes, so single-agent xmas *is* promptolution and its optimizers plug in
 # without ports. Compatible range: track 2.x, refuse the next major.
-dependencies = ["promptolution>=2.2.3,<3.0.0"]
+dependencies = [
+  # [api] pulls openai + requests, which promptolution.llms imports at package
+  # level. APILLM is xmas's default path to the gateway, so it is core rather
+  # than an extra; the genuinely heavy backends stay behind extras (P6).
+  "promptolution[api]>=2.2.3,<3.0.0",
+  "networkx>=3.4",
+  "langgraph>=0.6.11",
+  "pyyaml>=6.0",
+]
 
 [project.urls]
 Repository = "https://github.com/gepromptet/xmas"
@@ -53,6 +61,9 @@ dev = [
   "mkdocs>=1.6",
   "mkdocs-material>=9.5",
   "mkdocstrings[python]>=0.27",
+  "networkx-stubs>=0.0.1",
+  "pandas-stubs>=2.2",
+  "types-pyyaml>=6.0",
 ]
 
 # ---------------------------------------------------------------------------
@@ -111,6 +122,13 @@ strict = true
 warn_unreachable = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 pretty = true
+
+# promptolution ships no py.typed marker, so mypy would treat every base class we
+# subclass as Any and strict mode would reject the subclassing outright. Following
+# its source gives us the real signatures instead of silencing the check.
+[[tool.mypy.overrides]]
+module = ["promptolution.*"]
+follow_untyped_imports = true
 
 # ---------------------------------------------------------------------------
 # pytest
