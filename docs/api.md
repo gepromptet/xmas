@@ -86,6 +86,12 @@ teacher-forced sibling of generation.
 
 ::: xmas.optimization.attribution.Attributor
 
+::: xmas.optimization.attribution.UniformAttributor
+
+::: xmas.optimization.attribution.ContrastiveAttributor
+
+::: xmas.optimization.attribution.UNKNOWN
+
 ::: xmas.optimization.updaters.Updater
 
 ::: xmas.optimization.updaters.TopologyUpdater
@@ -95,6 +101,22 @@ teacher-forced sibling of generation.
 ::: xmas.optimization.updaters.AgentPromptView
 
 ::: xmas.optimization.reference.PrefixSearchOptimizer
+
+### CANTANTE
+
+Attribution-guided prompt optimization: every agent's prompt is improved at once,
+by its own promptolution optimizer, against a single shared system evaluation
+that an attributor splits back into per-agent credit.
+
+::: xmas.optimization.cantante.CantanteOptimizer
+
+::: xmas.optimization.broker
+    options:
+      members:
+        - Board
+        - ProxyTask
+        - Request
+        - rounds
 
 ## Serialization
 
