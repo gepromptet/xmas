@@ -13,6 +13,7 @@ from xmas.tasks.probing import (
     importance_weights,
     materialize,
     measure_agreement,
+    negative_control,
     rank_agreement,
 )
 
@@ -29,5 +30,6 @@ __all__ = [
     "importance_weights",
     "materialize",
     "measure_agreement",
+    "negative_control",
     "rank_agreement",
 ]

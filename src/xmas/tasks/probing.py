@@ -718,6 +718,8 @@ class AgreementReadout:
         generation_tokens: Mean tokens decoded per datapoint, summed over candidates.
         probing_tokens: Mean tokens teacher-forced per datapoint, summed over
             candidates. Decode tokens are zero, which is the point.
+        null_rho_mean: Mean rank correlation once the probe tensor is shuffled.
+        null_rho_ci: Central 95% interval of those shuffled correlations.
     """
 
     generation: np.ndarray
@@ -725,6 +727,22 @@ class AgreementReadout:
     rho: float
     generation_tokens: float
     probing_tokens: float
+    null_rho_mean: float = math.nan
+    null_rho_ci: tuple[float, float] = (math.nan, math.nan)
+
+    @property
+    def admissible(self) -> bool:
+        """Whether the negative control passed, i.e. its interval contains zero.
+
+        Shuffling the probe tensor destroys which candidate assigned what, while
+        leaving the reference rewards and the marginal spread of log-probabilities
+        untouched. If the correlation survives that, it was coming from the rewards
+        or from the shape of the population rather than from the probes, and
+        :attr:`rho` is not evidence about the estimator. A readout that is not
+        admissible should be reported as a failed guard, not as a weak result.
+        """
+        low, high = self.null_rho_ci
+        return bool(not math.isnan(low) and low <= 0.0 <= high)
 
     @property
     def speedup(self) -> float:
@@ -742,8 +760,62 @@ class AgreementReadout:
     def __repr__(self) -> str:
         """Return the readout's headline numbers."""
         return (
-            f"AgreementReadout(rho={self.rho:.3f}, candidates={len(self.generation)}, token_ratio={self.speedup:.1f}x)"
+            f"AgreementReadout(rho={self.rho:.3f}, null={self.null_rho_mean:.3f}, "
+            f"admissible={self.admissible}, candidates={len(self.generation)}, "
+            f"token_ratio={self.speedup:.1f}x)"
         )
+
+
+def negative_control(
+    probe: ProbeTensor,
+    target: Sequence[float],
+    estimator: Estimator | None = None,
+    n_permutations: int = 200,
+    seed: int = 42,
+) -> tuple[float, tuple[float, float]]:
+    """Return the mean and 95% interval of the rank correlation under a shuffled probe.
+
+    The guard calinka runs before it trusts any recovery curve. Permuting the whole
+    tensor breaks the association between a candidate and what it assigned, but keeps
+    the reference rewards and the marginal distribution of log-probabilities exactly
+    as they were, so anything that still correlates was never coming from the probes.
+
+    Args:
+        probe: The measured probe tensor.
+        target: The generation-based score per candidate.
+        estimator: The estimator to re-run. Defaults to :class:`ImportanceSampling`.
+        n_permutations: Permutations to draw.
+        seed: Seed, so a guard is reproducible.
+
+    Returns:
+        The mean null correlation and its central 95% interval.
+    """
+    estimate = estimator if estimator is not None else ImportanceSampling()
+    rng = np.random.default_rng(seed)
+    flat = probe.log_p.flatten()
+
+    draws: list[float] = []
+    for _ in range(n_permutations):
+        shuffled = _with_log_p(probe, rng.permutation(flat).reshape(probe.log_p.shape))
+        rho = rank_agreement(list(target), _row_means(estimate(shuffled)).tolist())
+        if not math.isnan(rho):
+            draws.append(rho)
+
+    if not draws:
+        return math.nan, (math.nan, math.nan)
+    values = np.array(draws)
+    return float(values.mean()), (float(np.percentile(values, 2.5)), float(np.percentile(values, 97.5)))
+
+
+def _with_log_p(probe: ProbeTensor, log_p: np.ndarray) -> ProbeTensor:
+    """Return a copy of a probe tensor carrying different log-probabilities."""
+    return ProbeTensor(
+        log_p=log_p,
+        reward=probe.reward,
+        input_index=probe.input_index,
+        inputs=probe.inputs,
+        probed_tokens=probe.probed_tokens,
+    )
 
 
 def materialize(predictor: MAS, candidates: Sequence[Prompt]) -> list[MAS]:
@@ -796,7 +868,8 @@ def measure_agreement(
         seed: Seed for the pool's source draw.
 
     Returns:
-        The readout.
+        The readout, including the shuffled-probe negative control. Check
+        ``admissible`` before reading ``rho``.
 
     Raises:
         ValueError: If fewer than two candidates are given, since a rank correlation
@@ -816,12 +889,19 @@ def measure_agreement(
         refs_per_input=refs_per_input,
         seed=seed,
     )
-    probed = ProbingTask(task, pool, k=k).evaluate(list(candidates), predictor=predictor)
+    probing = ProbingTask(task, pool, k=k)
+    tensor = probing.probe(list(candidates), predictor, xs)
+    probed = _row_means(probing.estimator(tensor))
+
+    target = generated.agg_scores.tolist()
+    null_mean, null_ci = negative_control(tensor, target, probing.estimator, seed=seed)
 
     return AgreementReadout(
         generation=generated.agg_scores,
-        probing=probed.agg_scores,
-        rho=rank_agreement(generated.agg_scores.tolist(), probed.agg_scores.tolist()),
+        probing=probed,
+        rho=rank_agreement(target, probed.tolist()),
         generation_tokens=float(np.nansum(generated.agg_output_tokens)),
-        probing_tokens=float(np.nansum(probed.agg_input_tokens)),
+        probing_tokens=float(tensor.probed_tokens.sum()) * len(candidates),
+        null_rho_mean=null_mean,
+        null_rho_ci=null_ci,
     )

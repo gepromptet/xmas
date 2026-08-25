@@ -22,9 +22,11 @@ from xmas.tasks.probing import (
     ProbingTask,
     Reference,
     ReferencePool,
+    _row_means,
     importance_weights,
     materialize,
     measure_agreement,
+    negative_control,
     rank_agreement,
 )
 
@@ -549,3 +551,66 @@ def test_materialize_keeps_the_structure_and_only_swaps_prompts() -> None:
     assert rebuilt[0].agents["solver"].prompt == "replaced: {query}"
     assert rebuilt[0].structure == mas.structure
     assert mas.agents["solver"].prompt == "original: {query}", "the original is untouched"
+
+
+# ----------------------------------------------------------- negative control
+
+
+def test_the_shuffled_control_destroys_a_real_correlation() -> None:
+    """Permuting the tensor breaks candidate-to-reference association, nothing else."""
+    log_p = np.log(np.array([[0.9, 0.1], [0.5, 0.5], [0.1, 0.9]]))
+    probe = ProbeTensor(
+        log_p=log_p,
+        reward=np.array([1.0, 0.0]),
+        input_index=np.array([0, 0]),
+        inputs=("q",),
+        probed_tokens=np.array([1.0, 1.0]),
+    )
+    target = [1.0, 0.5, 0.0]
+
+    assert rank_agreement(target, _row_means(ImportanceSampling()(probe)).tolist()) == pytest.approx(1.0)
+
+    null_mean, (low, high) = negative_control(probe, target, n_permutations=200, seed=0)
+
+    assert abs(null_mean) < 0.4, "a shuffled probe must not track the target"
+    assert low <= 0.0 <= high, "the null interval has to contain zero"
+
+
+def test_a_readout_is_inadmissible_when_the_null_interval_excludes_zero() -> None:
+    readout = AgreementReadout(
+        generation=np.array([1.0, 0.0]),
+        probing=np.array([1.0, 0.0]),
+        rho=1.0,
+        generation_tokens=100.0,
+        probing_tokens=10.0,
+        null_rho_mean=0.9,
+        null_rho_ci=(0.8, 0.95),
+    )
+
+    assert not readout.admissible
+    assert "admissible=False" in repr(readout)
+
+
+def test_a_readout_carries_its_own_guard() -> None:
+    correct = {"What is 2+2?": "4", "What is 3+3?": "6", "What is 5+5?": "10"}
+
+    def responder(prompt: str) -> str:
+        answer = next((value for key, value in correct.items() if key in prompt), "0")
+        return answer if prompt.startswith("good") else "0"
+
+    def logprob(context: str, continuation: str) -> float:
+        return -1.0 if (context.startswith("good") and continuation in correct.values()) else -6.0
+
+    llm = ScoringLLM(logprob, responder)
+    mas = single_agent(llm, "good: {query}")
+
+    readout = measure_agreement(
+        GSM8KTask(SLICE),
+        mas,
+        [Prompt("good: {query}"), Prompt("bad: {query}")],
+        refs_per_input=4,
+        seed=0,
+    )
+
+    assert readout.admissible, "the guard must pass on a readout that is real"
+    assert readout.probing_tokens > 0.0
