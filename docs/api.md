@@ -104,9 +104,12 @@ share of the *population's* probability mass it puts on references that scored w
 
 ::: xmas.tasks.probing.ImportanceSampling
 
+::: xmas.tasks.probing.AgreementReadout
+
 ::: xmas.tasks.probing
     options:
       members:
+        - measure_agreement
         - importance_weights
         - rank_agreement
 

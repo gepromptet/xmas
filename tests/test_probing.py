@@ -22,6 +22,7 @@ from xmas.tasks.probing import (
     Reference,
     ReferencePool,
     importance_weights,
+    measure_agreement,
     rank_agreement,
 )
 
@@ -365,3 +366,43 @@ def single_agent_live(llm: APILLM) -> MAS:
         [Agent("solver", prompt="Solve the problem. End with the final number alone.\n\n{query}", output="prediction")],
         llm=llm,
     )
+
+
+# ---------------------------------------------------------------- readout
+
+
+def test_the_readout_reports_perfect_agreement_when_probing_tracks_generation() -> None:
+    """The scorer is rigged so likelihood mass follows the reward the MAS earns."""
+    correct = {"What is 2+2?": "4", "What is 3+3?": "6", "What is 5+5?": "10"}
+
+    def responder(prompt: str) -> str:
+        answer = next((value for key, value in correct.items() if key in prompt), "0")
+        return answer if prompt.startswith("good") else "0"
+
+    def logprob(context: str, continuation: str) -> float:
+        right = continuation in correct.values()
+        return -1.0 if (context.startswith("good") and right) else -6.0
+
+    llm = ScoringLLM(logprob, responder)
+    mas = single_agent(llm, "good: {query}")
+    task = GSM8KTask(SLICE)
+
+    readout = measure_agreement(
+        task,
+        mas,
+        [Prompt("good: {query}"), Prompt("bad: {query}")],
+        refs_per_input=1,
+        seed=0,
+    )
+
+    assert readout.generation[0] > readout.generation[1], "the good prompt decodes better"
+    assert readout.probing[0] > readout.probing[1], "and probing must agree"
+    assert readout.rho == pytest.approx(1.0)
+
+
+def test_the_readout_refuses_a_single_candidate() -> None:
+    llm = ScoringLLM()
+    mas = single_agent(llm)
+
+    with pytest.raises(ValueError, match="at least two candidates"):
+        measure_agreement(GSM8KTask(SLICE), mas, [Prompt("Solve: {query}")])

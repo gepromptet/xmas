@@ -3,6 +3,7 @@
 from xmas.tasks.base import MASTask
 from xmas.tasks.gsm8k import GSM8KTask
 from xmas.tasks.probing import (
+    AgreementReadout,
     Estimator,
     ImportanceSampling,
     ProbeTensor,
@@ -10,10 +11,12 @@ from xmas.tasks.probing import (
     Reference,
     ReferencePool,
     importance_weights,
+    measure_agreement,
     rank_agreement,
 )
 
 __all__ = [
+    "AgreementReadout",
     "Estimator",
     "GSM8KTask",
     "ImportanceSampling",
@@ -23,5 +26,6 @@ __all__ = [
     "Reference",
     "ReferencePool",
     "importance_weights",
+    "measure_agreement",
     "rank_agreement",
 ]

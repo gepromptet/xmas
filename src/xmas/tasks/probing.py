@@ -699,3 +699,100 @@ def _ranks(values: Sequence[float]) -> np.ndarray:
         if tied.size > 1:
             ranks[tied] = ranks[tied].mean()
     return ranks
+
+
+@dataclass(frozen=True)
+class AgreementReadout:
+    """How closely probing reproduces the ranking that generation would give.
+
+    The diagnostic the whole method rests on. Probing is only a legitimate stand-in
+    for generation if it puts the candidates in the same order, because an
+    optimizer's selection step consumes the order and nothing else. The absolute
+    values are not comparable and are not meant to be: one is a mean reward, the
+    other a reward-weighted probability share.
+
+    Attributes:
+        generation: Ĵ_AR per candidate, the mean reward of what each actually decoded.
+        probing: Ĵ_IS per candidate, from the probe tensor.
+        rho: Spearman rank correlation between the two, over the candidates.
+        generation_tokens: Mean tokens decoded per datapoint, summed over candidates.
+        probing_tokens: Mean tokens teacher-forced per datapoint, summed over
+            candidates. Decode tokens are zero, which is the point.
+    """
+
+    generation: np.ndarray
+    probing: np.ndarray
+    rho: float
+    generation_tokens: float
+    probing_tokens: float
+
+    @property
+    def speedup(self) -> float:
+        """Decoded tokens per probed token, or ``inf`` if nothing was probed.
+
+        A token-count ratio only. The wall-clock advantage is larger, because
+        decoding is sequential and a probe is one parallel pass, but that factor is
+        a property of the serving stack and has to be measured there rather than
+        inferred here.
+        """
+        if self.probing_tokens == 0.0:
+            return math.inf
+        return self.generation_tokens / self.probing_tokens
+
+    def __repr__(self) -> str:
+        """Return the readout's headline numbers."""
+        return (
+            f"AgreementReadout(rho={self.rho:.3f}, candidates={len(self.generation)}, token_ratio={self.speedup:.1f}x)"
+        )
+
+
+def measure_agreement(
+    task: MASTask,
+    predictor: MAS,
+    candidates: Sequence[Prompt],
+    references: ReferencePool | None = None,
+    k: int | None = None,
+    refs_per_input: int = DEFAULT_REFS_PER_INPUT,
+    seed: int = 42,
+) -> AgreementReadout:
+    """Score one candidate set both ways and report how far the rankings agree.
+
+    Generation and probing are measured on the same inputs and the same candidates,
+    so the only thing that differs is the estimator. The reference pool is decoded
+    separately from the generation-based evaluation rather than reusing its outputs:
+    a pool built from the very decodes being used as the target would let each
+    candidate probe its own answers, and the agreement would then partly measure that
+    overlap rather than the estimator.
+
+    Args:
+        task: The task to evaluate against.
+        predictor: The MAS the candidate prompt sets belong to.
+        candidates: Encoded prompt sets, one per candidate.
+        references: A pool to reuse. ``None`` decodes a fresh one.
+        k: Reference budget per input. ``None`` uses the whole pool.
+        refs_per_input: References to decode per input when building a pool.
+        seed: Seed for the pool's source draw.
+
+    Returns:
+        The readout.
+
+    Raises:
+        ValueError: If fewer than two candidates are given, since a rank correlation
+            over one candidate is undefined.
+    """
+    if len(candidates) < 2:
+        raise ValueError(f"An agreement readout needs at least two candidates, got {len(candidates)}.")
+
+    generated = task.evaluate(list(candidates), predictor=predictor)
+
+    xs, ys = task.subsample()
+    pool = references or ReferencePool.generate(task, [predictor], xs, ys, refs_per_input=refs_per_input, seed=seed)
+    probed = ProbingTask(task, pool, k=k).evaluate(list(candidates), predictor=predictor)
+
+    return AgreementReadout(
+        generation=generated.agg_scores,
+        probing=probed.agg_scores,
+        rho=rank_agreement(generated.agg_scores.tolist(), probed.agg_scores.tolist()),
+        generation_tokens=float(np.nansum(generated.agg_output_tokens)),
+        probing_tokens=float(np.nansum(probed.agg_input_tokens)),
+    )
