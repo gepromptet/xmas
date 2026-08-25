@@ -177,6 +177,30 @@ def test_a_new_predecessor_reaches_the_agent_that_gained_it() -> None:
     assert trace["helper"][0].raw_response in rendered
 
 
+def test_rewired_agents_read_what_their_predecessors_actually_write() -> None:
+    # The defect: an agent's inputs were derived from its predecessors' *names*,
+    # so a system whose outputs are named for what they hold rather than for the
+    # agent that wrote them got rewired to variables nothing writes. Every fixture
+    # in this file happens to follow the `{name}_out` convention, which is exactly
+    # why that went unseen, so this one deliberately does not.
+    mas = MAS(
+        agents=[
+            Agent("drafter", "Draft an answer to {query}", output="draft"),
+            Agent("reviewer", "Review {draft}", output="review", inputs=["draft"]),
+        ],
+        edges=[("drafter", "reviewer")],
+        llm=MockLLM(lambda prompt: f"[{prompt[:20]}]"),
+    )
+
+    candidates = updater(seed=1).propose(mas, {}, n=6)
+
+    assert candidates
+    for candidate in candidates:
+        written = {agent.output for agent in candidate.agents.values()} | {"query"}
+        read = {name for agent in candidate.agents.values() for name in agent.inputs}
+        assert read <= written, f"{sorted(read - written)} is read but nothing writes it"
+
+
 def test_an_agent_whose_inputs_did_not_change_keeps_its_prompt() -> None:
     mas = pipeline()
     rebuilt = updater().rebuild(mas, ["solver", "checker"], [("solver", "checker")])

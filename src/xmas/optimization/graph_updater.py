@@ -129,13 +129,14 @@ class GraphUpdater:
             The candidate as a system.
         """
         wiring = mas_edges(names, edges, self.entry_of(mas))
-        inputs = self.inputs_for(names, wiring)
+        outputs = {name: self.output_of(mas, name) for name in names}
+        inputs = self.inputs_for(names, wiring, outputs)
 
         agents: dict[str, Agent] = {}
         pending: list[Rewrite] = []
         for name in names:
             parent = mas.agents.get(name)
-            output = parent.output if parent is not None else f"{name}_out"
+            output = outputs[name]
             prompt = parent.prompt if parent is not None else NEW_AGENT_PROMPT.format(name=name)
             model = parent.model if parent is not None else None
             agents[name] = Agent(name, prompt, output=output, inputs=inputs[name], model=model)
@@ -154,7 +155,24 @@ class GraphUpdater:
             default_model=mas.default_model,
         )
 
-    def inputs_for(self, names: list[str], wiring: Edges) -> dict[str, list[str]]:
+    def output_of(self, mas: MAS, name: str) -> str:
+        """Return the variable one agent of a candidate writes.
+
+        An agent that survived the mutation keeps writing whatever it already
+        wrote; only an agent the mutation invented needs a name, and it gets the
+        conventional one.
+
+        Args:
+            mas: The parent, whose agents supply the surviving names.
+            name: The agent to look up.
+
+        Returns:
+            The output variable name.
+        """
+        parent = mas.agents.get(name)
+        return parent.output if parent is not None else f"{name}_out"
+
+    def inputs_for(self, names: list[str], wiring: Edges, outputs: dict[str, str]) -> dict[str, list[str]]:
         """Work out what each agent reads, from who now feeds it.
 
         This is the inversion the recon asked for. The seed derived an agent's
@@ -165,16 +183,21 @@ class GraphUpdater:
         Args:
             names: The candidate's agent names.
             wiring: The full edge list, sentinels included.
+            outputs: The variable each agent writes, keyed by agent name. Passed
+                in rather than derived from the name, because an agent that
+                survives a mutation keeps the output variable it already had:
+                assuming ``f"{name}_out"`` wires every rewired agent to a variable
+                nothing writes, and the new edge then changes the schedule and
+                nothing else.
 
         Returns:
             Input variable names per agent, in a stable order.
         """
-        outputs = {name: f"{name}_out" for name in names}
+        explicit = {target for _, target in wiring}
         resolved: dict[str, list[str]] = {}
         for name in names:
-            upstream = sorted(outputs[source] for source, target in wiring if target == name and source in outputs)
+            upstream = sorted({outputs[source] for source, target in wiring if target == name and source in outputs})
             from_start = any(source == START and target == name for source, target in wiring)
-            explicit = {target for _, target in wiring}
             if from_start or name not in explicit:
                 upstream = ["query", *upstream]
             resolved[name] = upstream or ["query"]
