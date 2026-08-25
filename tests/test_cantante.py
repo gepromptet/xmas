@@ -9,6 +9,7 @@ that one result, without knowing it is inside a multi-agent system.
 from __future__ import annotations
 
 import math
+import time
 from typing import Any, ClassVar
 
 import numpy as np
@@ -20,6 +21,7 @@ from promptolution.tasks.base_task import EvalResult
 from promptolution.utils.prompt import Prompt
 
 from xmas import MAS, Agent, MASTask
+from xmas.optimization import broker, cantante
 from xmas.optimization.attribution import UNKNOWN, UniformAttributor
 from xmas.optimization.cantante import CantanteOptimizer
 from xmas.trace import AgentRecord, Trace
@@ -137,6 +139,66 @@ def test_one_round_evaluates_the_system_once_not_once_per_agent(monkeypatch: pyt
 
     assert optimizer.rounds_served == 1
     assert evaluated == [2]  # one call, two joint prompt sets
+
+
+def test_a_round_waits_for_the_slow_agent_instead_of_serving_without_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The same cost claim, under the timing a real inner optimizer produces. CAPO
+    # writes few-shot examples before its first evaluate and EvoPromptGA scores an
+    # initial population, so agents do not reach the broker at the same instant. A
+    # broker that served the first request it saw would spend one whole system
+    # evaluation per agent, which is exactly what this seam exists to avoid.
+    class Staggered(Scripted):
+        def _pre_optimization_loop(self) -> None:
+            if self.agent == "reviewer":
+                time.sleep(0.2)
+
+    mas, _ = system()
+    Scripted.candidates = {
+        "drafter": [f"draft {GOOD} {{query}}", "draft {query}"],
+        "reviewer": [f"review {GOOD} {{draft}} for {{query}}", "review {draft} for {query}"],
+    }
+    subject = task()
+    optimizer = CantanteOptimizer(mas, subject, UniformAttributor(), Staggered, inner_steps=1)
+
+    evaluated: list[int] = []
+    original = subject.evaluate
+
+    def counting(prompts: Prompt | list[Prompt], **kwargs: Any) -> EvalResult:
+        evaluated.append(len(prompts) if isinstance(prompts, list) else 1)
+        return original(prompts, **kwargs)
+
+    monkeypatch.setattr(subject, "evaluate", counting)
+    optimizer.propose()
+
+    assert optimizer.rounds_served == 1
+    assert evaluated == [2]
+
+
+def test_a_round_gives_up_on_an_agent_that_never_arrives(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The backstop. One agent takes longer than the settle timeout allows, so the
+    # round serves the one that is waiting rather than stalling behind it, and the
+    # latecomer gets a round of its own.
+    class Late(Scripted):
+        def _pre_optimization_loop(self) -> None:
+            if self.agent == "reviewer":
+                time.sleep(0.4)
+
+    monkeypatch.setattr(
+        cantante,
+        "rounds",
+        lambda board, workers: broker.rounds(board, workers, settle_timeout=0.0),
+    )
+    mas, _ = system()
+    Scripted.candidates = {
+        "drafter": [f"draft {GOOD} {{query}}", "draft {query}"],
+        "reviewer": [f"review {GOOD} {{draft}} for {{query}}", "review {draft} for {query}"],
+    }
+    optimizer = CantanteOptimizer(mas, task(), UniformAttributor(), Late, inner_steps=1)
+
+    candidates = optimizer.propose()
+
+    assert optimizer.rounds_served == 2  # served separately, but neither was dropped
+    assert len(candidates) == 2
 
 
 def test_each_agent_receives_only_its_own_share_of_the_result() -> None:

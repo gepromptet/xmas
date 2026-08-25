@@ -25,6 +25,7 @@ it would like evaluated next.
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -202,6 +203,10 @@ class Board:
                 taken[agent] = request
         return taken
 
+    def posted(self) -> int:
+        """Return how many proxies hold an unanswered request. Caller must hold the condition."""
+        return sum(1 for proxy in self.proxies.values() if proxy.pending is not None)
+
     def cancel_all(self) -> None:
         """Release every parked caller."""
         with self.condition:
@@ -209,8 +214,38 @@ class Board:
                 proxy.cancel()
 
 
-def rounds(board: Board, workers: list[Future[Any]]) -> Iterator[dict[str, Request]]:
+SETTLE_TIMEOUT_S = 10.0
+"""How long a posted request waits for its peers before the round serves without them.
+
+A backstop rather than a schedule: a round normally closes the moment the last
+worker arrives. This bounds the case where one of them is doing something slow, so
+the round degrades to a smaller batch instead of stalling behind it.
+"""
+
+POLL_INTERVAL_S = 0.25
+"""How often the broker rechecks while a round is settling."""
+
+
+def _still_working(workers: list[Future[Any]], parked: int) -> int:
+    """Return how many workers are neither finished nor parked on a request."""
+    return sum(1 for worker in workers if not worker.done()) - parked
+
+
+def rounds(
+    board: Board,
+    workers: list[Future[Any]],
+    settle_timeout: float = SETTLE_TIMEOUT_S,
+) -> Iterator[dict[str, Request]]:
     """Yield each batch of pending requests until every worker has finished.
+
+    A round is not served the instant one agent asks. It settles first: the loop
+    waits until every worker is either parked on a request of its own or finished,
+    so that one system evaluation answers the whole population. Serving the first
+    request to arrive would quietly spend one whole system evaluation *per agent*,
+    because an inner optimizer that does work before its first ``evaluate`` (a
+    meta-model call, an initial population) does not arrive at the same instant as
+    its peers. That cost is the one thing this seam exists to avoid, so waiting for
+    the batch is the behaviour and not an optimization.
 
     The loop blocks on the board's condition rather than polling it. It wakes when
     a proxy posts a request, and on a short timeout so that a worker that ends
@@ -220,6 +255,8 @@ def rounds(board: Board, workers: list[Future[Any]]) -> Iterator[dict[str, Reque
     Args:
         board: The shared board.
         workers: The futures running the per-agent optimizers.
+        settle_timeout: Seconds a posted request waits for its peers before the
+            round is served without them.
 
     Yields:
         Pending requests keyed by agent, at least one per yield.
@@ -229,15 +266,22 @@ def rounds(board: Board, workers: list[Future[Any]]) -> Iterator[dict[str, Reque
     """
     while True:
         with board.condition:
+            deadline: float | None = None
+            while True:
+                parked = board.posted()
+                if parked:
+                    if deadline is None:
+                        deadline = time.monotonic() + settle_timeout
+                    if _still_working(workers, parked) <= 0 or time.monotonic() >= deadline:
+                        break
+                else:
+                    failed = next((worker for worker in workers if worker.done() and worker.exception()), None)
+                    if failed is not None:
+                        raise failed.exception() or RuntimeError("A worker failed without an exception.")
+                    if all(worker.done() for worker in workers):
+                        return
+                board.condition.wait(timeout=POLL_INTERVAL_S)
             batch = board.collect()
-            while not batch:
-                failed = next((worker for worker in workers if worker.done() and worker.exception()), None)
-                if failed is not None:
-                    raise failed.exception() or RuntimeError("A worker failed without an exception.")
-                if all(worker.done() for worker in workers):
-                    return
-                board.condition.wait(timeout=0.25)
-                batch = board.collect()
         yield batch
 
 
