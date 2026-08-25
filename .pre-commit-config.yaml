@@ -11,6 +11,11 @@ repos:
     hooks:
       - id: gitleaks
 
+  # These hooks cover Python only. Ruff's own file discovery also formats Python
+  # code blocks inside markdown, but the pre-commit hook hands it .md paths as if
+  # they were Python source and it fails to parse them. CI runs `ruff format
+  # --check .`, which does discovery properly, so README snippets are still
+  # checked -- just by CI rather than here.
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.6
     hooks:

@@ -47,15 +47,15 @@ from xmas import Agent, MAS, APILLM
 
 llm = APILLM(model="llama-3.1-8b", base_url="https://api.tomzehle.com/v1")
 
-solver  = Agent("solver",  prompt="Solve step by step.", output="draft")
+solver = Agent("solver", prompt="Solve step by step.", output="draft")
 checker = Agent("checker", prompt="Verify and answer.", inputs=["query", "draft"], output="prediction")
 
 mas = MAS([solver, checker], edges=[("solver", "checker")], llm=llm)
 
-answer = mas("What is 17 * 23?")          # __call__ runs it
-trace  = mas.last_trace                    # full per-agent record of that call
+answer = mas("What is 17 * 23?")  # __call__ runs it
+trace = mas.last_trace  # full per-agent record of that call
 
-mas.to_yaml("gsm8k.yaml")                  # serialization as methods
+mas.to_yaml("gsm8k.yaml")  # serialization as methods
 mas2 = MAS.from_yaml("gsm8k.yaml", llm=llm)
 new = mas.copy(prompts={"solver": "..."})  # optimizers derive candidates this way
 ```
