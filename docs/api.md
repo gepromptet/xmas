@@ -118,6 +118,45 @@ that an attributor splits back into per-agent credit.
         - Request
         - rounds
 
+### Topology search
+
+The other half of the decomposition: the graph is the component, and the same
+loop improves it. Operators work on the agent-level edge set, with the sentinel
+wiring left to `build_graph`, so a candidate is legal exactly when a `MAS` can be
+built from it.
+
+::: xmas.optimization.evolution.EvolutionaryTopologyOptimizer
+
+::: xmas.optimization.graph_updater.GraphUpdater
+
+::: xmas.optimization.topology
+    options:
+      members:
+        - TopologyBudget
+        - mutate
+        - crossover
+        - repair
+        - mas_edges
+        - is_valid
+        - within_budget
+        - agent_edges
+        - sources
+        - terminals
+        - cycles
+
+### Prompt synthesis
+
+Topology search moves information around; something has to write the sentence
+that uses it.
+
+::: xmas.optimization.synthesis.PromptSynthesizer
+
+::: xmas.optimization.synthesis.LLMPromptSynthesizer
+
+::: xmas.optimization.synthesis.MechanicalSynthesizer
+
+::: xmas.optimization.synthesis.Rewrite
+
 ## Serialization
 
 ::: xmas.spec
