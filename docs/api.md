@@ -56,6 +56,8 @@ teacher-forced sibling of generation.
 
 ::: xmas.llms.scoring.ScoredSequence
 
+::: xmas.llms.scoring.SupportsScore
+
 ::: xmas.llms.masking
     options:
       members:
@@ -79,6 +81,34 @@ teacher-forced sibling of generation.
 ::: xmas.tasks.gsm8k.GSM8KTask
 
 ::: xmas.tasks.gsm8k.extract_number
+
+## Probing
+
+Generation-free evaluation. A probing task wraps any other task and scores candidates
+by teacher-forcing a shared pool of references whose reward is already known, instead
+of decoding a fresh answer per candidate. Every optimizer runs against it unchanged,
+which is design principle P2.
+
+The estimator is CALINKA's importance-sampling form: a candidate is credited for the
+share of the *population's* probability mass it puts on references that scored well.
+
+::: xmas.tasks.probing.ProbingTask
+
+::: xmas.tasks.probing.Reference
+
+::: xmas.tasks.probing.ReferencePool
+
+::: xmas.tasks.probing.ProbeTensor
+
+::: xmas.tasks.probing.Estimator
+
+::: xmas.tasks.probing.ImportanceSampling
+
+::: xmas.tasks.probing
+    options:
+      members:
+        - importance_weights
+        - rank_agreement
 
 ## Optimization
 

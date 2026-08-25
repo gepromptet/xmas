@@ -49,6 +49,26 @@ class MASTask(BaseTask):
         )
         self.task_type = "reward"
 
+    def reward(self, xs: list[str], ys: list[str], preds: list[str]) -> np.ndarray:
+        """Score outputs the MAS did not necessarily just produce.
+
+        The public name for :meth:`_evaluate`. promptolution keeps the reward
+        protected because generation-based evaluation only ever scores what the
+        predictor just returned, so nothing outside the task needed it. Probing
+        does: it scores a pool of references decoded earlier, by other
+        candidates, and the reward that grades them has to be this task's own or
+        the probe is estimating a different quantity than the task defines.
+
+        Args:
+            xs: The inputs.
+            ys: The targets.
+            preds: The outputs to score.
+
+        Returns:
+            One score per datapoint.
+        """
+        return self._evaluate(xs, ys, preds)
+
     def _evaluate(self, xs: list[str], ys: list[str], preds: list[str]) -> np.ndarray:
         """Score predictions against targets.
 
