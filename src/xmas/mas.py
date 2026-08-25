@@ -423,11 +423,6 @@ class MAS(BasePredictor):
             self._structure = current
         return self._compiled
 
-    def _invalidate(self) -> None:
-        """Drop the cached compilation after a structural change."""
-        self._compiled = None
-        self._structure = None
-
     @property
     def terminal(self) -> str:
         """Name of the agent whose output is the MAS output."""

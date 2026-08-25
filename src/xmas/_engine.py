@@ -80,15 +80,6 @@ class CompiledGraph(Protocol):
         ...
 
 
-def _state_variables(mas: MAS) -> set[str]:
-    """Return every state variable the agents read or write."""
-    variables: set[str] = set()
-    for agent in mas.agents.values():
-        variables.update(agent.inputs)
-        variables.add(agent.output)
-    return variables
-
-
 def _make_node(mas: MAS, agent: Agent, count_tokens: Callable[[str], float]) -> Callable[[MASState], dict[str, Any]]:
     """Build the callable LangGraph runs for one agent.
 
