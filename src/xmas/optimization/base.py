@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections import defaultdict
+
+from promptolution.utils.prompt import Prompt
 
 from xmas.mas import MAS
+from xmas.optimization.attribution import Attributor
 from xmas.tasks.base import MASTask
 
 
@@ -20,21 +24,25 @@ class MASOptimizer(ABC):
     Attributes:
         mas: The current best system.
         task: The task being optimized against.
+        attributor: Optional credit assignment, consulted before proposing.
         history: Aggregate score of the incumbent after each step.
     """
 
-    mas: MAS
-    task: MASTask
-    history: list[float]
-
-    def __init__(self, mas: MAS, task: MASTask) -> None:
+    def __init__(self, mas: MAS, task: MASTask, attributor: Attributor | None = None) -> None:
         """Initialize the optimizer.
 
         Args:
             mas: The starting system.
             task: The task to optimize against.
+            attributor: Assigns per-component credit from the last evaluation. A
+                subclass may use it to choose what to change. Optional, because
+                an optimizer that changes everything at once needs no credit.
         """
-        raise NotImplementedError
+        self.mas = mas
+        self.task = task
+        self.attributor = attributor
+        self.history: list[float] = []
+        self.credit: dict[str, list[float]] = {}
 
     def optimize(self, n_steps: int) -> MAS:
         """Run the loop and return the best system found.
@@ -45,7 +53,57 @@ class MASOptimizer(ABC):
         Returns:
             The best system found, which may be the one passed in.
         """
-        raise NotImplementedError
+        for _ in range(n_steps):
+            candidates = self.propose()
+            if not candidates:
+                break
+            scores = self.evaluate(candidates)
+            self.mas = self.select(candidates, scores)
+            self.history.append(max(scores))
+            self._assign_credit(candidates, scores)
+        return self.mas
+
+    def evaluate(self, candidates: list[MAS]) -> list[float]:
+        """Score candidates through the task.
+
+        Candidates that share a structure differ only in prompts, so they are
+        evaluated as one population against a single predictor: that is exactly
+        the batching promptolution's tasks already do, including their cache.
+        Candidates with a different structure get their own pass, because a
+        different graph cannot be expressed as another graph's prompt set.
+
+        Args:
+            candidates: Systems to score.
+
+        Returns:
+            One aggregate score per candidate, in the order given.
+        """
+        scores = [0.0] * len(candidates)
+        groups: dict[object, list[tuple[int, MAS]]] = defaultdict(list)
+        for index, candidate in enumerate(candidates):
+            groups[candidate.structure].append((index, candidate))
+
+        for group in groups.values():
+            predictor = group[0][1]
+            prompts = [Prompt(candidate.encode()) for _, candidate in group]
+            result = self.task.evaluate(prompts, predictor=predictor)
+            for (index, _), score in zip(group, result.agg_scores.tolist(), strict=True):
+                scores[index] = float(score)
+
+        return scores
+
+    def _assign_credit(self, candidates: list[MAS], scores: list[float]) -> None:
+        """Ask the attributor to split the last round's scores across components.
+
+        Stored rather than returned so that :meth:`propose` can read it on the
+        next step without the loop having to thread it through.
+        """
+        if self.attributor is None:
+            return
+        traces = list(candidates[0].last_traces)
+        if not traces:
+            return
+        self.credit = self.attributor.attribute(traces, scores[: len(traces)])
 
     @abstractmethod
     def propose(self) -> list[MAS]:
@@ -54,17 +112,6 @@ class MASOptimizer(ABC):
         Returns:
             Candidates, derived from :attr:`mas` via :meth:`xmas.MAS.copy`.
         """
-
-    def evaluate(self, candidates: list[MAS]) -> list[float]:
-        """Score candidates through the task.
-
-        Args:
-            candidates: Systems to score.
-
-        Returns:
-            One aggregate score per candidate, in the order given.
-        """
-        raise NotImplementedError
 
     @abstractmethod
     def select(self, candidates: list[MAS], scores: list[float]) -> MAS:

@@ -20,9 +20,8 @@ promptolution the N=1 case and xmas the general one.
 See [docs/design-principles.md](docs/design-principles.md) for the six principles that
 hold the design together.
 
-> **Status: pre-alpha.** The shell is in place and the core is under active
-> construction. The API below is a sketch of the intended feel, not a working
-> interface yet.
+> **Status: pre-alpha.** Core inference and the optimization loop are in place.
+> Attribution methods, topology search and the experiment layer are not.
 
 ## Installation
 
@@ -34,8 +33,8 @@ cd xmas
 uv sync
 ```
 
-The core depends on `promptolution` and little else. Heavy backends live behind extras,
-mirroring promptolution's own `[api]` / `[vllm]` / `[transformers]` split:
+The core depends on `promptolution` and little else. Heavy backends live behind
+extras, mirroring promptolution's own `[api]` / `[vllm]` / `[transformers]` split:
 
 ```bash
 uv sync --extra vllm     # vLLM backend
@@ -43,13 +42,61 @@ uv sync --extra vllm     # vLLM backend
 
 ## Quickstart
 
-> Placeholder. This is the shape the API is aiming for; none of it runs yet.
+```python
+from xmas import Agent, MAS, APILLM
+
+llm = APILLM(model="llama-3.1-8b", base_url="https://api.tomzehle.com/v1")
+
+solver  = Agent("solver",  prompt="Solve step by step.", output="draft")
+checker = Agent("checker", prompt="Verify and answer.", inputs=["query", "draft"], output="prediction")
+
+mas = MAS([solver, checker], edges=[("solver", "checker")], llm=llm)
+
+answer = mas("What is 17 * 23?")          # __call__ runs it
+trace  = mas.last_trace                    # full per-agent record of that call
+
+mas.to_yaml("gsm8k.yaml")                  # serialization as methods
+mas2 = MAS.from_yaml("gsm8k.yaml", llm=llm)
+new = mas.copy(prompts={"solver": "..."})  # optimizers derive candidates this way
+```
+
+Agents are addressable and mutable through the system:
 
 ```python
-import xmas
-
-print(xmas.__version__)
+mas.agents["solver"].prompt = "Solve carefully, showing each step."
 ```
+
+## The degenerate case
+
+A one-agent system is a promptolution predictor, not an analogue of one, so
+promptolution's own optimizers run against it with no adapter:
+
+```python
+from promptolution.tasks.classification_tasks import ClassificationTask
+from promptolution.utils.prompt import Prompt
+
+mas = MAS([Agent("solver", prompt="Classify: {query}", output="prediction")], llm=llm)
+task = ClassificationTask(df, x_column="x", y_column="y")
+
+result = task.evaluate(Prompt("Classify: {query}"), predictor=mas)
+```
+
+## Optimizing
+
+Every part of a system is a component an optimizer can change. The loop is
+propose, evaluate through the task, select:
+
+```python
+from xmas.optimization import PrefixSearchOptimizer
+from xmas.tasks.gsm8k import GSM8KTask
+
+task = GSM8KTask.from_huggingface(split="test", n=50)
+best = PrefixSearchOptimizer(mas, task).optimize(n_steps=3)
+```
+
+`PrefixSearchOptimizer` is deliberately trivial and exists as a control: it
+exercises the whole loop with no algorithm in the way. Real methods arrive as
+`Attributor` and `Updater` implementations, not as new frameworks.
 
 ## Configuration
 

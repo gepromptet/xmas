@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 from promptolution.tasks.base_task import BaseTask
@@ -26,7 +28,7 @@ class MASTask(BaseTask):
         x_column: str,
         y_column: str,
         task_description: str | None = None,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
         """Initialize the task.
 
@@ -38,7 +40,14 @@ class MASTask(BaseTask):
                 that write prompts.
             **kwargs: Forwarded to promptolution's ``BaseTask``.
         """
-        raise NotImplementedError
+        super().__init__(
+            df=df,
+            x_column=x_column,
+            y_column=y_column,
+            task_description=task_description,
+            **kwargs,
+        )
+        self.task_type = "reward"
 
     def _evaluate(self, xs: list[str], ys: list[str], preds: list[str]) -> np.ndarray:
         """Score predictions against targets.
@@ -50,5 +59,8 @@ class MASTask(BaseTask):
 
         Returns:
             One score per datapoint.
+
+        Raises:
+            NotImplementedError: Always; subclasses define the reward.
         """
-        raise NotImplementedError
+        raise NotImplementedError("A MASTask subclass must define its reward.")

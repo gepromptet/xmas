@@ -392,8 +392,13 @@ class MAS(BasePredictor):
 
     # -------------------------------------------------------------- internals
 
-    def _fingerprint(self) -> _Structure:
-        """Return what the compiled graph depends on.
+    @property
+    def structure(self) -> _Structure:
+        """What the compiled graph depends on, and what makes two MASs swappable.
+
+        Two systems with the same structure differ only in prompts, so one can
+        evaluate the other's prompt sets. An optimizer uses this to batch a whole
+        population of prompt candidates through a single predictor.
 
         Prompts are deliberately absent: they travel in the run state, so editing
         one must not throw away a compilation. Anything else about an agent, its
@@ -412,7 +417,7 @@ class MAS(BasePredictor):
         The compiled object's type is an implementation detail and never appears
         in a public signature.
         """
-        current = self._fingerprint()
+        current = self.structure
         if self._compiled is None or self._structure != current:
             self._compiled = _engine.compile_mas(self)
             self._structure = current

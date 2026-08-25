@@ -133,6 +133,12 @@ pretty = true
 module = ["promptolution.*"]
 follow_untyped_imports = true
 
+# `datasets` is imported lazily by GSM8KTask.from_huggingface and is deliberately
+# not a dependency; see the docstring there.
+[[tool.mypy.overrides]]
+module = ["datasets.*"]
+ignore_missing_imports = true
+
 # ---------------------------------------------------------------------------
 # pytest
 # ---------------------------------------------------------------------------
