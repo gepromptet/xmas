@@ -14,6 +14,12 @@ not on it is an implementation detail and may change without notice.
 The graph is a plain `networkx.DiGraph` over agent names plus two sentinels, so a
 topology optimizer is an ordinary graph-rewriting component.
 
+A cycle is expressed as an ordinary edge. The engine classifies the edge that
+closes it as a back edge and compiles it to a conditional branch, so the agent
+that closes the loop decides whether to take it by emitting `<continue>` in its
+response. Two guards bound the loop regardless of what a prompt says: that
+agent's own visit count, and `max_steps` behind it.
+
 ::: xmas.graph
     options:
       members:
@@ -22,6 +28,8 @@ topology optimizer is an ordinary graph-rewriting component.
         - build_graph
         - validate_graph
         - agent_names
+        - back_edges
+        - forward_predecessors
         - join_nodes
         - terminal_agent
 

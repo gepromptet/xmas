@@ -145,6 +145,83 @@ def agent_names(graph: nx.DiGraph[str]) -> list[str]:
     return sorted(agents)
 
 
+def _pending(graph: nx.DiGraph[str], node: str) -> list[str]:
+    """Return a node's successors ready to be consumed by ``pop``.
+
+    Reversed, because ``pop`` takes from the tail and the traversal is specified
+    to visit successors in ascending order.
+
+    Args:
+        graph: The topology.
+        node: The node whose successors are wanted.
+
+    Returns:
+        The successors, in descending order.
+    """
+    return sorted(graph.successors(node), reverse=True)
+
+
+def back_edges(graph: nx.DiGraph[str]) -> set[tuple[str, str]]:
+    """Return the edges whose removal makes the topology acyclic.
+
+    These are the cycle-closing edges of a depth-first traversal from
+    :data:`START`: an edge to a node that is still open on the search stack. They
+    are the only edges a run may decline to follow, so identifying them is what
+    turns a cyclic topology from an infinite loop into a retry loop. See
+    :mod:`xmas._engine` for how they compile.
+
+    Which of a cycle's edges is the closing one is a real decision, not
+    bookkeeping: the back edge is the conditional one, so it decides which agent
+    owns the loop. Depth-first from :data:`START` with successors taken in sorted
+    order picks the edge that runs against the flow, so in ``a -> b -> c`` with
+    ``c -> b``, it is ``c -> b`` that becomes the retry and ``c`` that decides.
+
+    Args:
+        graph: The topology.
+
+    Returns:
+        The cycle-closing edges. Empty for a directed acyclic graph.
+    """
+    found: set[tuple[str, str]] = set()
+    finished: set[str] = set()
+    for root in [START, *sorted(graph.nodes)]:
+        if root not in graph or root in finished:
+            continue
+        # Iterative DFS. `open_nodes` is the current stack as a set, so an edge
+        # into it is an edge into an ancestor, which is the definition of a back
+        # edge. Recursion is avoided because a mutated topology can be deep.
+        stack: list[tuple[str, list[str]]] = [(root, _pending(graph, root))]
+        open_nodes = {root}
+        while stack:
+            node, pending = stack[-1]
+            if not pending:
+                stack.pop()
+                open_nodes.discard(node)
+                finished.add(node)
+                continue
+            target = pending.pop()
+            if target in open_nodes:
+                found.add((node, target))
+            elif target not in finished:
+                stack.append((target, _pending(graph, target)))
+                open_nodes.add(target)
+    return found
+
+
+def forward_predecessors(graph: nx.DiGraph[str], node: str) -> set[str]:
+    """Return a node's predecessors excluding those that reach it by a back edge.
+
+    Args:
+        graph: The topology.
+        node: The node to inspect.
+
+    Returns:
+        Predecessors on acyclic paths only.
+    """
+    back = back_edges(graph)
+    return {source for source in graph.predecessors(node) if (source, node) not in back}
+
+
 def join_nodes(graph: nx.DiGraph[str]) -> set[str]:
     """Return the agents that must wait for every inbound path before running.
 
@@ -154,14 +231,21 @@ def join_nodes(graph: nx.DiGraph[str]) -> set[str]:
     seed engine has this defect latent, and every mutated topology triggers it,
     so the set computed here is what the executor defers on.
 
+    Back edges are excluded from the count. A node at the top of a retry loop is
+    fed both from upstream and from the agent that decided to loop, but those two
+    never arrive in the same pass, and deferring on the second would hold the node
+    until an input that only exists if it runs first.
+
     Args:
         graph: The topology.
 
     Returns:
-        Names of agents with more than one distinct predecessor.
+        Names of agents with more than one distinct forward predecessor.
     """
     agents = set(graph.nodes) - SENTINELS
-    return {agent for agent in agents if graph.in_degree(agent) > 1}
+    back = back_edges(graph)
+    counts = {agent: sum(1 for source in graph.predecessors(agent) if (source, agent) not in back) for agent in agents}
+    return {agent for agent, count in counts.items() if count > 1}
 
 
 def terminal_agent(graph: nx.DiGraph[str]) -> str:

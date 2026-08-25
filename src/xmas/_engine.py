@@ -17,7 +17,7 @@ from langgraph.graph import StateGraph
 from promptolution.utils.token_counter import get_token_counter
 
 from xmas.agent import Agent
-from xmas.graph import join_nodes, terminal_agent
+from xmas.graph import END, back_edges, join_nodes, terminal_agent
 from xmas.prompts import safe_format
 from xmas.trace import AgentRecord, TokenUsage, Trace
 
@@ -25,6 +25,41 @@ if TYPE_CHECKING:  # pragma: no cover
     from promptolution.llms.base_llm import BaseLLM
 
     from xmas.mas import MAS
+
+
+CONTINUE_MARKER = "<continue>"
+"""Marker an agent emits to take a back edge instead of moving on.
+
+A cyclic topology is a retry loop, and something has to decide when to stop. The
+agent that closes the loop decides, by emitting this marker in its response, which
+mirrors the seed engine's ``<continue_iter>`` convention. An agent that never
+emits it turns its cycle into a single pass, so a mutated topology that grows a
+cycle stays runnable without anyone rewriting a prompt for it.
+"""
+
+MAX_NODE_VISITS = 3
+"""How often one agent may run in a single query before its back edges close.
+
+The second stop condition, and the one that holds when a prompt emits the marker
+unconditionally. Matches the seed's ``stop_condition_max_retries``. The graph-wide
+``max_steps`` still caps total super-steps on top of this.
+"""
+
+
+def _merge_counts(current: dict[str, int], incoming: dict[str, int]) -> dict[str, int]:
+    """Add per-agent visit counts, so a looping agent accumulates its own.
+
+    Args:
+        current: Counts so far.
+        incoming: Counts from the agents that just finished.
+
+    Returns:
+        The summed mapping.
+    """
+    merged = dict(current)
+    for name, count in incoming.items():
+        merged[name] = merged.get(name, 0) + count
+    return merged
 
 
 def _merge_values(current: dict[str, str], incoming: dict[str, str]) -> dict[str, str]:
@@ -54,11 +89,13 @@ class MASState(TypedDict, total=False):
             in the state rather than being baked into the compiled graph, so one
             compilation serves every candidate an optimizer proposes.
         records: Accumulated per-agent records, in completion order.
+        visits: How often each agent has run, which is what bounds a retry loop.
     """
 
     values: Annotated[dict[str, str], _merge_values]
     prompts: dict[str, str]
     records: Annotated[list[AgentRecord], operator.add]
+    visits: Annotated[dict[str, int], _merge_counts]
 
 
 class CompiledGraph(Protocol):
@@ -116,9 +153,41 @@ def _make_node(mas: MAS, agent: Agent, count_tokens: Callable[[str], float]) -> 
             model=agent.model,
             raw_response=response,
         )
-        return {"values": {agent.output: response}, "records": [record]}
+        return {"values": {agent.output: response}, "records": [record], "visits": {agent.name: 1}}
 
     return node
+
+
+def _make_router(
+    agent: Agent,
+    back_targets: list[str],
+    forward_targets: list[str],
+) -> Callable[[MASState], list[str]]:
+    """Build the branch decision for an agent that closes a cycle.
+
+    The agent decides by what it wrote: emitting :data:`CONTINUE_MARKER` takes the
+    back edge, anything else moves on. Two guards make the loop finite regardless
+    of what the model says, because a prompt that always emits the marker is a
+    thing an optimizer will eventually propose: the agent's own visit count, and
+    the graph-wide recursion limit behind it.
+
+    Args:
+        agent: The agent whose out-edges are being routed.
+        back_targets: Targets reached by a back edge, taken when looping.
+        forward_targets: Targets reached otherwise, taken when moving on.
+
+    Returns:
+        A function mapping state to the node names to run next.
+    """
+    onward = forward_targets or [END]
+
+    def route(state: MASState) -> list[str]:
+        values = state.get("values") or {}
+        visits = (state.get("visits") or {}).get(agent.name, 0)
+        looping = CONTINUE_MARKER in str(values.get(agent.output) or "")
+        return back_targets if looping and visits < MAX_NODE_VISITS else onward
+
+    return route
 
 
 def compile_mas(mas: MAS) -> CompiledGraph:
@@ -128,6 +197,12 @@ def compile_mas(mas: MAS) -> CompiledGraph:
     node fed by predecessors at unequal depth runs exactly once per query rather
     than once per wave of arriving inputs.
 
+    Cycle-closing edges compile to conditional branches rather than to plain
+    edges. A static edge set cannot express a loop, because the edge back and the
+    edge onward would both fire on every pass and the run would spin until it hit
+    the recursion limit. Routing the two exclusively, on the looping agent's own
+    output, is what makes a cyclic topology terminate with an answer.
+
     Args:
         mas: The system to compile.
 
@@ -136,6 +211,7 @@ def compile_mas(mas: MAS) -> CompiledGraph:
     """
     builder: StateGraph[MASState, Any, MASState, MASState] = StateGraph(MASState)
     joins = join_nodes(mas.graph)
+    back = back_edges(mas.graph)
 
     counters: dict[int, Callable[[str], float]] = {}
     for name, agent in mas.agents.items():
@@ -152,8 +228,16 @@ def compile_mas(mas: MAS) -> CompiledGraph:
             defer=name in joins,
         )
 
-    for source, target in mas.graph.edges:
-        builder.add_edge(source, target)
+    for source in mas.graph.nodes:
+        targets = sorted(mas.graph.successors(source))
+        back_targets = [target for target in targets if (source, target) in back]
+        if not back_targets:
+            for target in targets:
+                builder.add_edge(source, target)
+            continue
+        forward_targets = [target for target in targets if (source, target) not in back]
+        router = _make_router(mas.agents[source], back_targets, forward_targets)
+        builder.add_conditional_edges(source, router, sorted({*back_targets, *forward_targets, END}))
 
     return builder.compile()
 
@@ -169,7 +253,7 @@ def _to_trace(mas: MAS, query: str, result: dict[str, Any]) -> Trace:
 
 def _initial_state(query: str, prompts: dict[str, str]) -> MASState:
     """Build the state a run starts from."""
-    return MASState(values={"query": query}, prompts=dict(prompts), records=[])
+    return MASState(values={"query": query}, prompts=dict(prompts), records=[], visits={})
 
 
 def run_one(mas: MAS, query: str, prompts: dict[str, str]) -> Trace:
