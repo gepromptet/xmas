@@ -32,6 +32,21 @@ from .conftest import requires_gateway
 MODEL = "llama-3.1-8b"
 """The student-tier model. Keep live tests on it."""
 
+GATEWAY_CONCURRENCY = 4
+"""What the gateway allows at once. promptolution defaults to 32.
+
+Exceeding it is answered with a 429, which the client then retries around, so the
+run still finishes but only after provoking the limiter and backing off. Staying
+under it is the difference between respecting a documented limit and discovering
+it repeatedly.
+"""
+
+
+def throttled(max_tokens: int = 512) -> APILLM:
+    """A gateway model that stays inside the concurrency the gateway allows."""
+    return APILLM(model=MODEL, max_tokens=max_tokens, max_concurrent_calls=GATEWAY_CONCURRENCY)
+
+
 # Three real GSM8K-style problems, inlined so the suite needs no dataset download.
 SLICE = pd.DataFrame(
     {
@@ -53,7 +68,7 @@ SLICE = pd.DataFrame(
 @pytest.fixture
 def live_llm() -> APILLM:
     """A model pointed at the gateway, configured entirely from the environment."""
-    return APILLM(model=MODEL, max_tokens=512)
+    return throttled()
 
 
 @requires_gateway
@@ -126,20 +141,6 @@ def test_the_reference_optimizer_runs_a_live_loop(live_llm: APILLM) -> None:
 
 TINY = SLICE.head(2)
 """Two problems. Every WP4 live test runs on this and nothing larger."""
-
-GATEWAY_CONCURRENCY = 4
-"""What the gateway allows at once. promptolution defaults to 32.
-
-Exceeding it is answered with a 429, which the client then retries around, so the
-run still finishes but only after provoking the limiter and backing off. Staying
-under it is the difference between respecting a documented limit and discovering
-it repeatedly.
-"""
-
-
-def throttled(max_tokens: int = 512) -> APILLM:
-    """A gateway model that stays inside the concurrency the gateway allows."""
-    return APILLM(model=MODEL, max_tokens=max_tokens, max_concurrent_calls=GATEWAY_CONCURRENCY)
 
 
 @requires_gateway
