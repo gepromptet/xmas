@@ -134,7 +134,13 @@ class MASOptimizer(ABC):
             cached: The task's cache keys as they were before the call.
 
         Returns:
-            One ``(trace, reward)`` pair per rollout actually executed.
+            One ``(trace, reward)`` pair per rollout actually executed, empty when
+            the task answered entirely from its cache.
+
+        Raises:
+            ValueError: If the reconstructed positions and the traces disagree in
+                length, which means the cache-key shape assumed here no longer
+                matches the task's own.
         """
         positions = [
             (index, column)
@@ -142,9 +148,16 @@ class MASOptimizer(ABC):
             for column, (x, y) in enumerate(zip(self.task.xs, self.task.ys, strict=True))
             if (text, x, str(y)) not in cached
         ]
+        # No misses means the task ran nothing, so `last_traces` still holds the
+        # previous call's rollouts. Returning early is what makes the zip below
+        # strict: from here on, a length mismatch is a reconstruction that has
+        # stopped matching the task's own cache keys, and pairing rewards to the
+        # wrong rollouts under it would corrupt every attribution silently.
+        if not positions:
+            return []
         return [
             (trace, float(scores[index][column]))
-            for (index, column), trace in zip(positions, predictor.last_traces, strict=False)
+            for (index, column), trace in zip(positions, predictor.last_traces, strict=True)
         ]
 
     def _assign_credit(self, candidates: list[MAS], scores: list[float]) -> None:  # noqa: ARG002

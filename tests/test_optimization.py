@@ -9,6 +9,7 @@ from promptolution.utils.prompt import Prompt
 
 from xmas import MAS, Agent
 from xmas.optimization import AgentPromptView, MASOptimizer, PrefixSearchOptimizer, PromptUpdater
+from xmas.optimization.attribution import UniformAttributor
 from xmas.optimization.reference import PREFIXES
 from xmas.tasks.gsm8k import GSM8KTask
 from xmas.trace import Trace
@@ -165,6 +166,42 @@ def test_the_attributor_seam_is_consulted_and_its_credit_is_stored() -> None:
 
     assert seen, "the attributor must be consulted after evaluation"
     assert optimizer.credit == {"solver": [0.0] * seen[0][1]}
+
+
+def test_a_fully_cached_evaluation_contributes_no_rollouts_rather_than_stale_ones() -> None:
+    # `last_traces` holds whatever ran most recently, so a task that answers
+    # entirely from its cache leaves the previous call's rollouts standing there.
+    # Pairing those against this call's score grid would hand the attributor every
+    # reward attached to the wrong rollout, which is invisible in the result.
+    mas = single_agent(prefix_sensitive_llm())
+    task = gsm8k_task()
+    optimizer = PrefixSearchOptimizer(mas, task, attributor=UniformAttributor())
+
+    optimizer.evaluate([mas])
+    assert optimizer._rollouts, "the first pass runs rollouts and records them"
+    assert mas.last_traces, "and leaves them where the second pass would find them"
+
+    optimizer.evaluate([mas])  # every cell is cached now, so nothing runs
+
+    assert optimizer._rollouts == []
+
+
+def test_alignment_refuses_to_pair_a_reconstruction_that_stopped_matching() -> None:
+    # `_align` recomputes which cells missed the task's cache from a snapshot taken
+    # before the call, which holds only while its key shape matches promptolution's
+    # own. Should that shape ever drift, every cell reads as a miss while only the
+    # cells that ran have traces, and pairing them would attach every reward to the
+    # wrong rollout. Reached through the private method because the whole point is
+    # a state the public path cannot currently produce.
+    mas = single_agent(prefix_sensitive_llm())
+    optimizer = PrefixSearchOptimizer(mas, gsm8k_task(), attributor=UniformAttributor())
+    optimizer.evaluate([mas])
+
+    encoded = [mas.encode(), mas.encode()]
+    grid = [[1.0] * len(ANSWERS), [1.0] * len(ANSWERS)]
+
+    with pytest.raises(ValueError, match="zip"):
+        optimizer._align(mas, encoded, grid, cached=set())
 
 
 def test_credit_steers_which_agent_is_varied() -> None:
