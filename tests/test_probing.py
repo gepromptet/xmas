@@ -16,6 +16,7 @@ from xmas.llms.scoring import ScoredSequence
 from xmas.optimization import PrefixSearchOptimizer
 from xmas.tasks.gsm8k import GSM8KTask
 from xmas.tasks.probing import (
+    AgreementReadout,
     ImportanceSampling,
     ProbeTensor,
     ProbingTask,
@@ -406,3 +407,111 @@ def test_the_readout_refuses_a_single_candidate() -> None:
 
     with pytest.raises(ValueError, match="at least two candidates"):
         measure_agreement(GSM8KTask(SLICE), mas, [Prompt("Solve: {query}")])
+
+
+# ------------------------------------------------------- guards and reprs
+
+
+def test_the_pool_rejects_a_budget_below_one() -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        pool_of(("a", "a1", 1.0)).columns(["a"], k=0)
+
+
+def test_generating_a_pool_needs_candidates_and_a_positive_budget() -> None:
+    task = GSM8KTask(SLICE)
+
+    with pytest.raises(ValueError, match="at least one candidate"):
+        ReferencePool.generate(task, [], task.xs, task.ys)
+
+    with pytest.raises(ValueError, match="refs_per_input must be at least 1"):
+        ReferencePool.generate(task, [single_agent(ScoringLLM())], task.xs, task.ys, refs_per_input=0)
+
+
+def test_a_probing_task_needs_a_non_empty_pool() -> None:
+    with pytest.raises(ValueError, match="non-empty reference pool"):
+        ProbingTask(GSM8KTask(SLICE), ReferencePool([]))
+
+
+def test_probing_needs_a_mas_to_render_a_terminal_prompt() -> None:
+    task = ProbingTask(GSM8KTask(SLICE), pool_of(("What is 2+2?", "four", 1.0)))
+
+    with pytest.raises(TypeError, match="needs a MAS predictor"):
+        task.evaluate([Prompt("Solve: {query}")], predictor=object())  # type: ignore[arg-type]
+
+
+def test_a_failed_rollout_contributes_no_reference() -> None:
+    """A run that produced nothing has no completion to teacher-force."""
+    llm = ScoringLLM(responder=lambda prompt: "")
+    task = GSM8KTask(SLICE)
+
+    pool = ReferencePool.generate(task, [single_agent(llm)], task.xs, task.ys, refs_per_input=1, seed=0)
+
+    assert len(pool) == 0
+
+
+def test_a_probing_task_accepts_a_single_block_index() -> None:
+    llm = ScoringLLM()
+    mas = single_agent(llm)
+    inner = GSM8KTask(SLICE, n_subsamples=3, eval_strategy="sequential_block")
+    task = ProbingTask(inner, pool_of(("What is 2+2?", "four", 1.0)))
+
+    result = task.evaluate([Prompt("Solve: {query}")], predictor=mas, block_idx=0)
+
+    assert result.agg_scores.shape == (1,)
+
+
+def test_the_pool_reports_the_inputs_it_covers() -> None:
+    pool = pool_of(("a", "a1", 1.0), ("b", "b1", 0.0), ("a", "a2", 1.0))
+
+    assert pool.inputs == ("a", "b")
+    assert len(pool) == 3
+
+
+def test_the_probe_tensor_reports_its_shape() -> None:
+    probe = ProbeTensor(
+        log_p=np.zeros((2, 3)),
+        reward=np.zeros(3),
+        input_index=np.array([0, 0, 1]),
+        inputs=("a", "b"),
+        probed_tokens=np.ones(3),
+    )
+
+    assert (probe.n_candidates, probe.n_references) == (2, 3)
+
+
+def test_a_readout_that_probed_nothing_reports_an_infinite_ratio() -> None:
+    readout = AgreementReadout(
+        generation=np.array([1.0, 0.0]),
+        probing=np.array([1.0, 0.0]),
+        rho=1.0,
+        generation_tokens=10.0,
+        probing_tokens=0.0,
+    )
+
+    assert readout.speedup == math.inf
+    assert "rho=1.000" in repr(readout)
+
+
+def test_the_public_objects_describe_themselves() -> None:
+    pool = pool_of(("a", "a1", 1.0))
+    task = ProbingTask(GSM8KTask(SLICE), pool, k=2)
+
+    assert repr(pool) == "ReferencePool(references=1, inputs=1)"
+    assert repr(ImportanceSampling()) == "ImportanceSampling()"
+    assert repr(task) == "ProbingTask(task=GSM8KTask, references=1, k=2)"
+
+
+def test_rank_agreement_is_undefined_for_fewer_than_two_candidates() -> None:
+    assert math.isnan(rank_agreement([1.0], [2.0]))
+
+
+def test_the_readout_reports_decoded_tokens_per_probed_token() -> None:
+    readout = AgreementReadout(
+        generation=np.array([1.0, 0.0]),
+        probing=np.array([1.0, 0.0]),
+        rho=1.0,
+        generation_tokens=400.0,
+        probing_tokens=20.0,
+    )
+
+    assert readout.speedup == pytest.approx(20.0)
