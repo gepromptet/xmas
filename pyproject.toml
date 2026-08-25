@@ -25,6 +25,7 @@ dependencies = [
   # than an extra; the genuinely heavy backends stay behind extras (P6).
   "promptolution[api]>=2.2.3,<3.0.0",
   "networkx>=3.4",
+  "httpx>=0.28",
   "langgraph>=0.6.11",
   "pyyaml>=6.0",
 ]
@@ -61,7 +62,7 @@ dev = [
   "mkdocs>=1.6",
   "mkdocs-material>=9.5",
   "mkdocstrings[python]>=0.27",
-  "networkx-stubs>=0.0.1",
+  "types-networkx>=3.4",
   "pandas-stubs>=2.2",
   "types-pyyaml>=6.0",
 ]
@@ -106,8 +107,10 @@ known-first-party = ["xmas"]
 ban-relative-imports = "parents"
 
 [tool.ruff.lint.per-file-ignores]
-# Tests document themselves through their names; docstrings are optional there.
-"tests/**/*.py" = ["D100", "D103", "D104"]
+# Tests document themselves through their names, so docstrings are optional; and a
+# test double has to match the signature it is standing in for, whether or not it
+# uses every argument.
+"tests/**/*.py" = ["D100", "D103", "D104", "ARG001", "ARG002", "ARG005"]
 
 [tool.ruff.format]
 docstring-code-format = true

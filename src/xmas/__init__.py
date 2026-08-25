@@ -12,7 +12,7 @@ Note:
 
 from xmas.agent import Agent
 from xmas.graph import END, START
-from xmas.llms import APILLM, VLLM, ScoredSequence
+from xmas.llms import APILLM, ScoredSequence
 from xmas.mas import MAS
 from xmas.tasks import GSM8KTask, MASTask
 from xmas.trace import AgentRecord, TokenUsage, ToolCall, Trace
@@ -24,7 +24,6 @@ __all__ = [
     "END",
     "MAS",
     "START",
-    "VLLM",
     "Agent",
     "AgentRecord",
     "GSM8KTask",

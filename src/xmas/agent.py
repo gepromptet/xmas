@@ -28,6 +28,13 @@ class Agent:
             a name rather than an object so that a MAS serializes to plain data.
     """
 
+    name: str
+    prompt: str
+    inputs: list[str]
+    output: str
+    tools: list[str]
+    model: str | None
+
     def __init__(
         self,
         name: str,
@@ -50,7 +57,20 @@ class Agent:
         Raises:
             ValueError: If ``name`` or ``output`` is empty, or ``inputs`` is empty.
         """
-        raise NotImplementedError
+        if not name:
+            raise ValueError("An agent needs a name.")
+        if not output:
+            raise ValueError(f"Agent {name!r} needs an output variable.")
+        resolved_inputs = list(inputs) if inputs is not None else [DEFAULT_INPUT]
+        if not resolved_inputs:
+            raise ValueError(f"Agent {name!r} needs at least one input variable.")
+
+        self.name = name
+        self.prompt = prompt
+        self.inputs = resolved_inputs
+        self.output = output
+        self.tools = list(tools) if tools is not None else []
+        self.model = model
 
     def to_dict(self) -> dict[str, Any]:
         """Return the plain-data form of this agent.
@@ -59,7 +79,14 @@ class Agent:
             A JSON- and YAML-safe mapping. Round-trips exactly through
             :meth:`from_dict`.
         """
-        raise NotImplementedError
+        return {
+            "name": self.name,
+            "prompt": self.prompt,
+            "inputs": list(self.inputs),
+            "output": self.output,
+            "tools": list(self.tools),
+            "model": self.model,
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Agent:
@@ -74,7 +101,20 @@ class Agent:
         Raises:
             ValueError: If a required key is missing or an unknown key is present.
         """
-        raise NotImplementedError
+        unknown = set(data) - {"name", "prompt", "inputs", "output", "tools", "model"}
+        if unknown:
+            raise ValueError(f"Unknown agent keys: {sorted(unknown)}.")
+        missing = {"name", "prompt", "output"} - set(data)
+        if missing:
+            raise ValueError(f"Agent is missing required keys: {sorted(missing)}.")
+        return cls(
+            name=data["name"],
+            prompt=data["prompt"],
+            output=data["output"],
+            inputs=data.get("inputs"),
+            tools=data.get("tools"),
+            model=data.get("model"),
+        )
 
     def copy(self, **overrides: Any) -> Agent:
         """Return a copy with the given attributes replaced.
@@ -85,12 +125,26 @@ class Agent:
         Returns:
             A new agent; this one is left unchanged.
         """
-        raise NotImplementedError
+        fields: dict[str, Any] = {
+            "name": self.name,
+            "prompt": self.prompt,
+            "output": self.output,
+            "inputs": list(self.inputs),
+            "tools": list(self.tools),
+            "model": self.model,
+        }
+        unknown = set(overrides) - set(fields)
+        if unknown:
+            raise ValueError(f"Unknown agent fields: {sorted(unknown)}.")
+        fields.update(overrides)
+        return Agent(**fields)
 
     def __eq__(self, other: object) -> bool:
         """Structural equality over every field."""
-        raise NotImplementedError
+        if not isinstance(other, Agent):
+            return NotImplemented
+        return self.to_dict() == other.to_dict()
 
     def __repr__(self) -> str:
         """Return an unambiguous representation."""
-        raise NotImplementedError
+        return f"Agent(name={self.name!r}, inputs={self.inputs!r}, output={self.output!r}, model={self.model!r})"

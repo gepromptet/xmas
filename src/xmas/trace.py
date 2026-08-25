@@ -22,15 +22,22 @@ class TokenUsage:
     @property
     def total_tokens(self) -> int:
         """Sum of input and output tokens."""
-        raise NotImplementedError
+        return self.input_tokens + self.output_tokens
 
     def __add__(self, other: TokenUsage) -> TokenUsage:
         """Add two usages component-wise, so usage aggregates over a trace."""
-        raise NotImplementedError
+        return TokenUsage(
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+        )
 
     def to_dict(self) -> dict[str, int]:
         """Return the plain-data form."""
-        raise NotImplementedError
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+        }
 
 
 @dataclass(frozen=True)
@@ -44,7 +51,12 @@ class ToolCall:
 
     def to_dict(self) -> dict[str, Any]:
         """Return the plain-data form."""
-        raise NotImplementedError
+        return {
+            "tool": self.tool,
+            "arguments": dict(self.arguments),
+            "result": self.result,
+            "failed": self.failed,
+        }
 
 
 @dataclass(frozen=True)
@@ -78,7 +90,18 @@ class AgentRecord:
 
     def to_dict(self) -> dict[str, Any]:
         """Return the plain-data form."""
-        raise NotImplementedError
+        return {
+            "agent": self.agent,
+            "step": self.step,
+            "prompt": self.prompt,
+            "rendered_prompt": self.rendered_prompt,
+            "inputs": dict(self.inputs),
+            "outputs": dict(self.outputs),
+            "tool_calls": [call.to_dict() for call in self.tool_calls],
+            "usage": self.usage.to_dict(),
+            "model": self.model,
+            "raw_response": self.raw_response,
+        }
 
 
 @dataclass(frozen=True)
@@ -100,19 +123,43 @@ class Trace:
     error: str | None = None
 
     def __getitem__(self, agent: str) -> tuple[AgentRecord, ...]:
-        """Return every record for one agent, in execution order."""
-        raise NotImplementedError
+        """Return every record for one agent, in execution order.
+
+        Args:
+            agent: The agent name.
+
+        Returns:
+            Its records. Empty if the agent did not run, which is a legitimate
+            outcome for a conditional branch rather than an error.
+        """
+        return tuple(record for record in self.records if record.agent == agent)
 
     @property
     def agents(self) -> tuple[str, ...]:
         """Names of the agents that ran, in first-execution order."""
-        raise NotImplementedError
+        seen: dict[str, None] = {}
+        for record in self.records:
+            seen.setdefault(record.agent, None)
+        return tuple(seen)
 
     @property
     def usage(self) -> TokenUsage:
         """Token usage summed over every record."""
-        raise NotImplementedError
+        total = TokenUsage()
+        for record in self.records:
+            total = total + record.usage
+        return total
+
+    @property
+    def failed(self) -> bool:
+        """Whether the run ended in an error."""
+        return self.error is not None
 
     def to_dict(self) -> dict[str, Any]:
         """Return the plain-data form, suitable for JSON or YAML."""
-        raise NotImplementedError
+        return {
+            "query": self.query,
+            "output": self.output,
+            "records": [record.to_dict() for record in self.records],
+            "error": self.error,
+        }

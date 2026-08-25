@@ -35,7 +35,25 @@ def assistant_span(tokens: Sequence[str], continuation: str) -> tuple[int, int]:
     Raises:
         ValueError: If the continuation does not align with token boundaries.
     """
-    raise NotImplementedError
+    if not continuation:
+        raise ValueError("Cannot locate an empty continuation.")
+    if not tokens:
+        raise ValueError("Cannot locate a continuation in an empty token sequence.")
+
+    accumulated = ""
+    for index in range(len(tokens) - 1, -1, -1):
+        accumulated = tokens[index] + accumulated
+        if len(accumulated) < len(continuation):
+            continue
+        if accumulated == continuation:
+            return index, len(tokens)
+        break
+
+    raise ValueError(
+        "The continuation does not align with the backend's token boundaries, so it has "
+        "no exact sequence log-probability. Scoring an approximation here would be "
+        "indistinguishable from a correct answer downstream."
+    )
 
 
 def mask_logprobs(
@@ -58,4 +76,16 @@ def mask_logprobs(
         ValueError: If the continuation does not align with token boundaries, or
             any of its tokens lacks a log-probability.
     """
-    raise NotImplementedError
+    if len(tokens) != len(logprobs):
+        raise ValueError(f"Got {len(tokens)} tokens but {len(logprobs)} log-probabilities.")
+
+    start, end = assistant_span(tokens, continuation)
+    span = list(logprobs[start:end])
+    missing = [index for index, value in enumerate(span, start=start) if value is None]
+    if missing:
+        raise ValueError(
+            f"Tokens at positions {missing} carry no log-probability, so the continuation "
+            "cannot be scored. The first prompt token is unconditioned by definition; a "
+            "continuation starting there is not scoreable."
+        )
+    return [float(value) for value in span if value is not None]
