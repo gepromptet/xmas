@@ -14,7 +14,7 @@ from xmas.agent import Agent
 from xmas.graph import END, START
 from xmas.llms import APILLM, ScoredSequence
 from xmas.mas import MAS
-from xmas.tasks import GSM8KTask, MASTask, ProbingTask, ReferencePool
+from xmas.tasks import GSM8KTask, MASTask
 from xmas.trace import AgentRecord, TokenUsage, ToolCall, Trace
 
 __version__ = "0.0.0"
@@ -28,8 +28,6 @@ __all__ = [
     "AgentRecord",
     "GSM8KTask",
     "MASTask",
-    "ProbingTask",
-    "ReferencePool",
     "ScoredSequence",
     "TokenUsage",
     "ToolCall",
