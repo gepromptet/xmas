@@ -8,6 +8,7 @@ from xmas.llms.api_llm import APILLM, RateLimitedError, ScoringUnsupportedError
 from xmas.llms.masking import assistant_span, mask_logprobs
 from xmas.llms.scoring import ScoredSequence, SupportsScore
 from xmas.llms.telemetry import CallLog, CallRecord, Price
+from xmas.llms.vllm_server import VLLMServerLLM
 
 __all__ = [
     "APILLM",
@@ -18,6 +19,7 @@ __all__ = [
     "ScoredSequence",
     "ScoringUnsupportedError",
     "SupportsScore",
+    "VLLMServerLLM",
     "assistant_span",
     "mask_logprobs",
 ]
