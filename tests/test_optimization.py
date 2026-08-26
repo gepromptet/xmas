@@ -274,3 +274,25 @@ def test_prompt_updater_targets_the_least_credited_agent() -> None:
 
     assert updater.target_agent(mas, {"solver": [0.9], "checker": [0.2]}) == "checker"
     assert updater.target_agent(mas, {}) == "solver", "no credit means deterministic order"
+
+
+# ------------------------------------------------------------------ population
+
+
+def test_the_population_is_a_knob_because_the_estimator_is_population_relative() -> None:
+    """A probing task's weights are bounded by M, so M is part of the measurement."""
+    mas = single_agent(prefix_sensitive_llm())
+
+    assert len(PrefixSearchOptimizer(mas, gsm8k_task(), population=16).propose()) == 16
+    assert len(PrefixSearchOptimizer(mas, gsm8k_task(), population=4).propose()) == 4
+
+
+def test_the_default_population_is_every_prefix() -> None:
+    mas = single_agent(prefix_sensitive_llm())
+
+    assert len(PrefixSearchOptimizer(mas, gsm8k_task()).propose()) == 1 + len(PREFIXES)
+
+
+def test_a_population_of_one_leaves_nothing_to_compare() -> None:
+    with pytest.raises(ValueError, match="at least 2"):
+        PrefixSearchOptimizer(single_agent(prefix_sensitive_llm()), gsm8k_task(), population=1)

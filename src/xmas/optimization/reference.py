@@ -17,8 +17,27 @@ PREFIXES: tuple[str, ...] = (
     "Think step by step.",
     "Be concise and exact.",
     "Show your reasoning, then the answer.",
+    "Work through the problem carefully before answering.",
+    "State the final answer on its own line.",
+    "Check your arithmetic before you commit to an answer.",
+    "Explain each step in one short sentence.",
+    "Solve it methodically, then give the result.",
+    "Break the problem into parts and handle each one.",
+    "Reason it out fully, then state the answer alone.",
+    "Do the calculation carefully and report the number.",
+    "First restate what is being asked, then solve it.",
+    "Take your time and show the intermediate values.",
+    "Answer only after verifying each step.",
+    "Lay out the working, then the final number.",
 )
-"""Fixed phrases tried against an agent's prompt. Not a method, a fixture."""
+"""Fixed phrases tried against an agent's prompt. Not a method, a fixture.
+
+Fifteen of them, so a population of sixteen is available without repeating one.
+Which matters more than it looks: a probing task's estimator is
+population-relative, and its importance weights are bounded by the population
+size, so the width of the candidate set is a property of the measurement and not
+just of the search.
+"""
 
 
 class PrefixSearchOptimizer(MASOptimizer):
@@ -39,6 +58,7 @@ class PrefixSearchOptimizer(MASOptimizer):
         task: MASTask,
         prefixes: tuple[str, ...] = PREFIXES,
         attributor: Attributor | None = None,
+        population: int | None = None,
     ) -> None:
         """Initialize the optimizer.
 
@@ -48,9 +68,22 @@ class PrefixSearchOptimizer(MASOptimizer):
             prefixes: Phrases to try.
             attributor: Optional credit assignment; when given, the agent with
                 the least credit is the one varied.
+            population: Candidates to propose per step, incumbent included.
+                ``None`` uses every prefix. A knob rather than a constant because
+                a probing task scores a population against itself: its weights are
+                bounded by the population size, so ``population`` sets the ceiling
+                on how far apart two candidates can be scored, and an experiment
+                has to be able to state and vary it.
+
+        Raises:
+            ValueError: If ``population`` is below two, which leaves the incumbent
+                nothing to be compared against.
         """
+        if population is not None and population < 2:
+            raise ValueError(f"population must be at least 2 (incumbent plus one candidate), got {population}.")
         super().__init__(mas, task, attributor=attributor)
-        self.prefixes = prefixes
+        self.prefixes = prefixes if population is None else prefixes[: population - 1]
+        self.population = population
         self._round = 0
 
     def target_agent(self) -> str:
