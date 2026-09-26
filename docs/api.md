@@ -52,6 +52,12 @@ teacher-forced sibling of generation.
 
 ::: xmas.llms.api_llm.APILLM
 
+Per-call records: pass `telemetry=CallLog()` and every call leaves a `CallRecord` with a
+`call_id` (UUID4), a `ts` (start time, ISO 8601 with offset), the `params` it was sent
+(`max_tokens` plus `call_kwargs`, minus `extra_headers`) and the provider's `response_id` (`response_ids` for a batch).
+`CallLog(capture_text=True)` also records `prompt`, `system_prompt` and `response`; a batch
+stays one record and fills `prompts`, `system_prompts`, `responses` instead (`exchanges()` reads both shapes).
+
 ::: xmas.llms.api_llm.ScoringUnsupportedError
 
 ::: xmas.llms.scoring.ScoredSequence
