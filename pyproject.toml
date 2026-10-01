@@ -23,10 +23,10 @@ dependencies = [
   # [api] pulls openai + requests, which promptolution.llms imports at package
   # level. APILLM is xmas's default path to the gateway, so it is core rather
   # than an extra; the genuinely heavy backends stay behind extras (P6).
-  "promptolution[api]>=2.2.3,<3.0.0",
-  "networkx>=3.4",
+  "promptolution[api]>=2.3.0,<3.0.0",
+  "networkx>=3.7",
   "httpx>=0.28",
-  "langgraph>=0.6.11",
+  "langgraph>=1.2.12",
   "pyyaml>=6.0",
 ]
 
@@ -52,19 +52,19 @@ packages = ["src/xmas"]
 # core package lands.
 # ---------------------------------------------------------------------------
 [project.optional-dependencies]
-vllm = ["promptolution[vllm]>=2.2.3,<3.0.0"]
+vllm = ["promptolution[vllm]>=2.3.0,<3.0.0"]
 dev = [
   "pre-commit>=4.0",
-  "ruff>=0.14",
+  "ruff>=0.16.9",
   "mypy>=1.14",
   "pytest>=8.3",
   "pytest-cov>=6.0",
   "mkdocs>=1.6",
   "mkdocs-material>=9.5",
-  "mkdocstrings[python]>=0.27",
-  "types-networkx>=3.4",
-  "pandas-stubs>=2.2",
-  "types-pyyaml>=6.0",
+  "mkdocstrings[python]>=1.0.6",
+  "types-networkx>=3.6.1.20260911",
+  "pandas-stubs>=3.0.5.260914",
+  "types-pyyaml>=6.0.12.20260906",
 ]
 
 # ---------------------------------------------------------------------------
