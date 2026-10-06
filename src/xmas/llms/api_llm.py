@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import os
 import time
+from contextvars import ContextVar
 from typing import Any
 
 import httpx
+from openai.types.chat import ChatCompletion
 from promptolution.llms import api_llm as _promptolution
+from promptolution.utils.templates import DEFAULT_SYS_PROMPT
 
 from xmas.llms.scoring import ScoredSequence
-from xmas.llms.telemetry import GENERATE, SCORE, CallLog, CallRecord, approximate_tokens
+from xmas.llms.telemetry import GENERATE, SCORE, CallLog, CallRecord, approximate_tokens, timestamp
 
 ENV_BASE_URL = "XMAS_BASE_URL"
 """Environment variable holding the endpoint base URL."""
@@ -20,6 +23,29 @@ ENV_API_KEY = "XMAS_API_KEY"
 
 SCORE_PATH = "score"
 """Scoring endpoint, resolved relative to ``base_url``."""
+
+UNRECORDED_CALL_KWARGS = frozenset({"extra_headers"})
+"""``call_kwargs`` keys left out of a record's ``params``: headers can carry credentials."""
+
+_completion_id: ContextVar[list[str | None] | None] = ContextVar("xmas_completion_id", default=None)
+"""Per-request slot for the provider's completion id.
+
+promptolution keeps only a completion's text, and each prompt of a batch runs as its
+own asyncio task, so a context variable is the one place the id can travel from the
+request that saw it to the response it belongs to without reimplementing the batch.
+"""
+
+
+class _Completion(str):
+    """A response string that remembers which provider completion it came from."""
+
+    completion_id: str | None
+
+    def __new__(cls, text: str, completion_id: str | None) -> _Completion:
+        """Wrap ``text``, attaching ``completion_id``."""
+        instance = super().__new__(cls, text)
+        instance.completion_id = completion_id
+        return instance
 
 
 class ScoringUnsupportedError(RuntimeError):
@@ -117,6 +143,38 @@ class APILLM(_promptolution.APILLM):
         if self.telemetry is not None:
             self.telemetry.record(record)
 
+    def _call_params(self) -> dict[str, Any]:
+        """Return what a generation is sent besides the messages, merged as promptolution merges it."""
+        params: dict[str, Any] = {"max_tokens": self.max_tokens}
+        params.update(self._call_kwargs)
+        for key in UNRECORDED_CALL_KWARGS:
+            params.pop(key, None)
+        return params
+
+    async def _ainvoke_once(self, prompt: str, system_prompt: str) -> ChatCompletion:
+        """Make one request, noting the provider's completion id for the caller."""
+        completion = await super()._ainvoke_once(prompt, system_prompt)
+        slot = _completion_id.get()
+        if slot is not None:
+            identifier = getattr(completion, "id", None)
+            slot[0] = identifier if isinstance(identifier, str) else None
+        return completion
+
+    async def _ainvoke_with_retries(self, prompt: str, system_prompt: str) -> str:
+        """Run promptolution's retry loop and tag the answer with its completion id.
+
+        The slot is overwritten by every attempt that reaches the provider, and the
+        attempt that returns is the last one, so the id that survives belongs to the
+        text that is returned.
+        """
+        slot: list[str | None] = [None]
+        token = _completion_id.set(slot)
+        try:
+            content = await super()._ainvoke_with_retries(prompt, system_prompt)
+        finally:
+            _completion_id.reset(token)
+        return _Completion(content, slot[0])
+
     def get_response(
         self,
         prompts: str | list[str],
@@ -128,6 +186,10 @@ class APILLM(_promptolution.APILLM):
         Token counts are read from the parent's own counters, which split on
         whitespace, so they are an approximation and are reported as one.
 
+        A batch is one call and stays one record. Its provenance (start time,
+        sampling parameters, completion ids) is always recorded; its text only
+        when the collector was built with ``capture_text=True``.
+
         Args:
             prompts: Prompt or prompts to answer.
             system_prompts: System prompt or prompts.
@@ -136,10 +198,12 @@ class APILLM(_promptolution.APILLM):
             One response per prompt.
         """
         n_prompts = 1 if isinstance(prompts, str) else len(prompts)
+        params = self._call_params()
         before = self.get_token_count()
+        started_at = timestamp()
         started = time.perf_counter()
         try:
-            responses = super().get_response(prompts, system_prompts)
+            tagged = super().get_response(prompts, system_prompts)
         except Exception as error:
             self._record(
                 CallRecord(
@@ -150,11 +214,17 @@ class APILLM(_promptolution.APILLM):
                     n_prompts=n_prompts,
                     ok=False,
                     error=f"{type(error).__name__}: {error}",
+                    ts=started_at,
+                    params=params,
+                    **self._provenance(prompts, system_prompts, None, None),
                 )
             )
             raise
         latency = time.perf_counter() - started
         after = self.get_token_count()
+        response_ids = [getattr(response, "completion_id", None) for response in tagged]
+        # Hand the caller ordinary strings, not the tagged subclass.
+        responses = [str(response) for response in tagged]
         self._record(
             CallRecord(
                 operation=GENERATE,
@@ -164,9 +234,54 @@ class APILLM(_promptolution.APILLM):
                 input_tokens=after["input_tokens"] - before["input_tokens"],
                 output_tokens=after["output_tokens"] - before["output_tokens"],
                 n_prompts=n_prompts,
+                ts=started_at,
+                params=params,
+                **self._provenance(prompts, system_prompts, responses, response_ids),
             )
         )
         return responses
+
+    def _provenance(
+        self,
+        prompts: str | list[str],
+        system_prompts: str | list[str] | None,
+        responses: list[str] | None,
+        response_ids: list[str | None] | None,
+    ) -> dict[str, Any]:
+        """Return the text and id fields of a generation record.
+
+        Args:
+            prompts: The prompts as the caller passed them.
+            system_prompts: The system prompts as the caller passed them, resolved
+                here exactly as promptolution resolves them before sending.
+            responses: The responses, or ``None`` when the call failed.
+            response_ids: The provider's completion ids, aligned to ``responses``.
+
+        Returns:
+            Keyword arguments for :class:`CallRecord`: singular fields for a
+            one-prompt call, list fields for a batch. The text is present only when
+            the collector asked for it.
+        """
+        prompt_list = [prompts] if isinstance(prompts, str) else list(prompts)
+        known_ids = response_ids if response_ids and any(i is not None for i in response_ids) else None
+        capture = self.telemetry is not None and self.telemetry.capture_text
+        if system_prompts is None:
+            system_prompts = DEFAULT_SYS_PROMPT
+        system_list = [system_prompts] * len(prompt_list) if isinstance(system_prompts, str) else list(system_prompts)
+
+        if len(prompt_list) == 1:
+            fields: dict[str, Any] = {"response_id": known_ids[0] if known_ids else None}
+            if capture:
+                fields["prompt"] = prompt_list[0]
+                fields["system_prompt"] = system_list[0] if system_list else None
+                fields["response"] = responses[0] if responses else None
+            return fields
+        fields = {"response_ids": known_ids}
+        if capture:
+            fields["prompts"] = prompt_list
+            fields["system_prompts"] = system_list
+            fields["responses"] = responses
+        return fields
 
     @property
     def model(self) -> str:
@@ -207,6 +322,7 @@ class APILLM(_promptolution.APILLM):
         if not continuation:
             raise ValueError("Cannot score an empty continuation.")
 
+        started_at = timestamp()
         started = time.perf_counter()
         try:
             response = httpx.post(
@@ -225,6 +341,7 @@ class APILLM(_promptolution.APILLM):
                     latency_s=time.perf_counter() - started,
                     ok=False,
                     error=f"{type(error).__name__}: {error}",
+                    ts=started_at,
                 )
             )
             raise
@@ -241,6 +358,7 @@ class APILLM(_promptolution.APILLM):
                 input_tokens=approximate_tokens(context) + approximate_tokens(continuation),
                 output_tokens=0,
                 scored_tokens=scored.token_count,
+                ts=started_at,
             )
         )
         return scored

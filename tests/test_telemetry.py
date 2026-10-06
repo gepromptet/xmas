@@ -7,7 +7,9 @@ what is pinned here is that the numbers mean what the report will say they mean.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -172,6 +174,183 @@ def test_recording_is_off_unless_a_collector_is_passed(monkeypatch: pytest.Monke
     result = build_llm().score("The answer is", " forty-two")
 
     assert result.token_count == 2
+
+
+# ------------------------------------------------------------------ provenance
+
+
+def chat_llm(log: CallLog, sent: list[dict[str, Any]], **kwargs: Any) -> APILLM:
+    """A gateway model whose chat endpoint is a mock transport under the real openai client.
+
+    Each answer is derived from the user prompt, and so is its completion id, so a
+    test can check that text and id stay with the prompt they belong to even when a
+    batch completes out of order.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        sent.append(body)
+        user = body["messages"][1]["content"]
+        return httpx.Response(
+            200,
+            json={
+                "id": f"cmpl-{user.replace(' ', '-')}",
+                "object": "chat.completion",
+                "created": 0,
+                "model": body["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": f"answer to {user}"},
+                    }
+                ],
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return APILLM(
+        model="llama-3.1-8b",
+        base_url=BASE_URL,
+        api_key="sk-test",
+        telemetry=log,
+        max_retries=0,
+        client_kwargs={"http_client": client},
+        **kwargs,
+    )
+
+
+def test_capture_is_off_by_default_and_leaves_the_text_out() -> None:
+    """Existing users get provenance, not a log that suddenly holds every prompt."""
+    log = CallLog()
+    sent: list[dict[str, Any]] = []
+
+    chat_llm(log, sent).get_response("what is six times seven", "be terse")
+
+    (record,) = log.records
+    assert log.capture_text is False
+    assert record.prompt is None
+    assert record.system_prompt is None
+    assert record.response is None
+    assert record.prompts is None
+    assert record.responses is None
+    assert record.exchanges() == []
+    assert record.response_id == "cmpl-what-is-six-times-seven", "the id is provenance, not text"
+    assert record.params == {"max_tokens": 4096}
+
+
+def test_capture_records_the_exact_strings_sent_and_returned() -> None:
+    log = CallLog(capture_text=True)
+    sent: list[dict[str, Any]] = []
+    llm = chat_llm(
+        log,
+        sent,
+        max_tokens=64,
+        call_kwargs={"temperature": 0.7, "extra_headers": {"X-Secret": "do-not-log"}},
+    )
+
+    (answer,) = llm.get_response("what is six times seven", "be terse")
+
+    (request,) = sent
+    (record,) = log.records
+    assert record.system_prompt == request["messages"][0]["content"] == "be terse"
+    assert record.prompt == request["messages"][1]["content"] == "what is six times seven"
+    assert record.response == answer == "answer to what is six times seven"
+    assert type(answer) is str, "the caller gets a plain string back"
+    assert record.response_id == "cmpl-what-is-six-times-seven"
+    assert record.params == {"max_tokens": 64, "temperature": 0.7}
+    assert request["max_tokens"] == 64
+    assert request["temperature"] == 0.7, "params record what was actually sent"
+    assert record.n_prompts == 1
+    assert record.prompts is None, "a one-prompt call uses the singular fields"
+
+
+def test_the_default_system_prompt_is_recorded_as_sent() -> None:
+    """A caller that passed no system prompt still sent one, and the record says which."""
+    log = CallLog(capture_text=True)
+    sent: list[dict[str, Any]] = []
+
+    chat_llm(log, sent).get_response("hello")
+
+    (record,) = log.records
+    assert record.system_prompt == sent[0]["messages"][0]["content"]
+    assert record.system_prompt
+
+
+def test_a_captured_batch_is_one_record_with_aligned_lists() -> None:
+    """A batch stays one call, so the rate statistics do not move when capture is on."""
+    log = CallLog(capture_text=True)
+    sent: list[dict[str, Any]] = []
+    prompts = ["first question", "second question", "third question"]
+
+    answers = chat_llm(log, sent).get_response(prompts, "be terse")
+
+    (record,) = log.records
+    assert record.n_prompts == 3
+    assert record.prompt is None, "a batch uses the list fields"
+    assert record.prompts == prompts
+    assert record.system_prompts == ["be terse"] * 3
+    assert record.responses == answers == [f"answer to {prompt}" for prompt in prompts]
+    assert record.response_ids == [f"cmpl-{prompt.replace(' ', '-')}" for prompt in prompts]
+    assert [exchange["prompt"] for exchange in record.exchanges()] == prompts
+    assert record.exchanges()[1]["response_id"] == "cmpl-second-question"
+
+
+def test_a_failed_generation_keeps_what_was_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    log = CallLog(capture_text=True)
+    llm = build_llm(log)
+
+    def refuse(self: APILLM, prompts: list[str], system_prompts: list[str]) -> list[str]:
+        raise TimeoutError("batch timed out")
+
+    monkeypatch.setattr(type(llm), "_get_response", refuse)
+
+    with pytest.raises(TimeoutError):
+        llm.get_response("a question", "be terse")
+
+    (record,) = log.records
+    assert not record.ok
+    assert record.prompt == "a question"
+    assert record.system_prompt == "be terse"
+    assert record.response is None
+
+
+def test_every_record_gets_its_own_call_id_and_a_parseable_start_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    log = CallLog()
+    llm = build_llm(log)
+    monkeypatch.setattr(type(llm), "_get_response", lambda self, prompts, system_prompts: ["ok"] * len(prompts))
+    monkeypatch.setattr(httpx, "post", lambda url, **kwargs: score_response())
+
+    llm.get_response("a")
+    llm.get_response(["b", "c"])
+    llm.score("The answer is", " forty-two")
+    log.record(CallRecord(GENERATE, "m", "gateway", latency_s=1.0))
+
+    assert len({record.call_id for record in log.records}) == len(log.records) == 4
+    for record in log.records:
+        started = datetime.fromisoformat(record.ts)
+        assert started.utcoffset() is not None, "a timestamp without an offset is ambiguous"
+
+
+def test_to_jsonl_appends_when_asked_and_replaces_otherwise(tmp_path: Path) -> None:
+    path = tmp_path / "calls.jsonl"
+    first = CallLog()
+    first.record(CallRecord(GENERATE, "m", "gateway", latency_s=1.0, params={"max_tokens": 8}))
+    first.record(CallRecord(SCORE, "m", "gateway", latency_s=0.1))
+    second = CallLog()
+    second.record(CallRecord(GENERATE, "m", "gateway", latency_s=2.0))
+
+    first.to_jsonl(path)
+    second.to_jsonl(path, append=True)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+
+    assert [row["latency_s"] for row in rows] == [1.0, 0.1, 2.0]
+    assert rows[0]["params"] == {"max_tokens": 8}
+    assert [row["call_id"] for row in rows] == [record.call_id for record in first.records + second.records]
+
+    second.to_jsonl(path)
+
+    assert len(path.read_text().splitlines()) == 1, "the default still overwrites"
 
 
 # ------------------------------------------------------------------ the limiter
