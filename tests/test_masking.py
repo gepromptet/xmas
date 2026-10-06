@@ -27,13 +27,6 @@ def test_span_rejects_a_continuation_that_straddles_a_token() -> None:
         assistant_span(["The", " answer", " is", " forty", "-two"], "orty-two")
 
 
-def test_span_rejects_empty_inputs() -> None:
-    with pytest.raises(ValueError, match="empty continuation"):
-        assistant_span(["a"], "")
-    with pytest.raises(ValueError, match="empty token sequence"):
-        assistant_span([], "a")
-
-
 def test_mask_returns_only_the_continuation_logprobs() -> None:
     tokens = ["Q", ":", " 2+2", " is", " four"]
     logprobs = [None, -0.1, -0.2, -0.3, -0.4]

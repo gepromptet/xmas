@@ -10,25 +10,20 @@ from typing import Any
 
 import httpx
 from openai.types.chat import ChatCompletion
-from promptolution.llms import api_llm as _promptolution
+from promptolution.llms import api_llm as promptolution
 from promptolution.utils.templates import DEFAULT_SYS_PROMPT
 
-from xmas.llms.call_log import GENERATE, SCORE, CallLog, CallRecord, approximate_tokens, timestamp
+from xmas.errors import XmasError
+from xmas.llms.call_log import CallLog, CallRecord, approximate_tokens, timestamp
 from xmas.llms.scoring import ScoredSequence
 from xmas.tools import Tool, ToolCallRequest, complete_with_tools
+from xmas.utils import error_message, retry_after_seconds
 
-ENV_BASE_URL = "XMAS_BASE_URL"
-"""Environment variable holding the endpoint base URL."""
-
-ENV_API_KEY = "XMAS_API_KEY"
-"""Environment variable holding the API key."""
-
-SCORE_PATH = "score"
-"""Scoring endpoint, resolved relative to ``base_url``."""
-
-UNRECORDED_CALL_KWARGS = frozenset({"extra_headers"})
-"""``call_kwargs`` keys left out of a record's ``params``: headers can carry credentials."""
-
+# Completion-id plumbing: _completion_id, _Completion and the _ainvoke_once /
+# _ainvoke_with_retries overrides below exist only because promptolution's
+# _ainvoke_with_retries returns the response text and drops the ChatCompletion,
+# and with it the provider's completion id that CallRecord.response_id(s) carry.
+# Temporary: delete all of it once promptolution returns the completion (or its id).
 _completion_id: ContextVar[list[str | None] | None] = ContextVar("xmas_completion_id", default=None)
 """Per-request slot for the provider's completion id.
 
@@ -50,22 +45,8 @@ class _Completion(str):
         return instance
 
 
-class ScoringUnsupportedError(RuntimeError):
-    """Raised when a backend cannot expose prompt log-probabilities.
-
-    Carries the endpoint's own explanation, which names the models that would
-    work, so the caller is not left guessing what to switch to.
-    """
-
-
 class RateLimitedError(RuntimeError):
-    """Raised when the endpoint refuses a call because the key is over its limit.
-
-    Typed, and carrying ``retry_after``, because a limiter wall is the system
-    working and the only correct response is to wait exactly as long as the
-    endpoint asked. A caller that could not tell this apart from a malformed
-    request would have to either give up or guess, and guessing is what turns
-    one 429 into a retry storm.
+    """Raised by xmas.tools.mcp on a 429; goes once mcp raises XmasError.
 
     Attributes:
         retry_after: Seconds the endpoint asked the caller to wait, or ``None``
@@ -83,18 +64,10 @@ class RateLimitedError(RuntimeError):
         self.retry_after = retry_after
 
 
-class APILLM(_promptolution.APILLM):
-    """An OpenAI-compatible model that can also score a fixed continuation.
+class APILLM(promptolution.APILLM):
+    """promptolution's APILLM plus :meth:`score`, tool turns and a per-call log.
 
-    Generation is inherited untouched from promptolution: batching, concurrency,
-    retries and token metering already live there, and reimplementing any of it
-    here would create a second place for the same bug. What xmas adds is
-    :meth:`score`.
-
-    The constructor accepts ``model`` and ``base_url``, which is what the xmas
-    surface reads like, and forwards them to promptolution's ``model_id`` and
-    ``api_url``. Both spellings are accepted so that code written against either
-    library keeps working.
+    ``model`` and ``base_url`` are forwarded to promptolution's ``model_id`` and ``api_url``.
     """
 
     def __init__(
@@ -109,36 +82,25 @@ class APILLM(_promptolution.APILLM):
         """Initialize the model.
 
         Args:
-            model: Model identifier, e.g. ``"llama-3.1-8b"``. Alias of the
-                parent's ``model_id``.
-            base_url: Endpoint base URL. Alias of the parent's ``api_url``.
-                Defaults to the ``XMAS_BASE_URL`` environment variable.
-            api_key: API key. Defaults to the ``XMAS_API_KEY`` environment
-                variable. Never read from a file in the repository.
-            call_log: Collector for per-call statistics. ``None`` records
-                nothing, which is the default so that ordinary use pays no
-                attention to instrumentation.
-            backend_tag: What this backend calls itself in a record. Calls from
-                two serving paths must never be pooled into one statistic, and
-                this is what keeps them separable afterwards.
+            model: Model identifier, e.g. ``"llama-3.1-8b"``.
+            base_url: Endpoint base URL. Defaults to ``XMAS_BASE_URL``.
+            api_key: API key. Defaults to ``XMAS_API_KEY``.
+            call_log: Collector for per-call statistics; ``None`` records nothing.
+            backend_tag: What this backend calls itself in a record.
             **kwargs: Forwarded to promptolution's ``APILLM``.
 
         Raises:
             ValueError: If no model is given, or no base URL can be resolved.
         """
-        model = model or kwargs.pop("model_id", None)
-        base_url = base_url or kwargs.pop("api_url", None) or os.environ.get(ENV_BASE_URL)
-        api_key = api_key or os.environ.get(ENV_API_KEY)
-
+        base_url = base_url or os.environ.get("XMAS_BASE_URL")
         if not model:
             raise ValueError("APILLM needs a model, e.g. APILLM(model='llama-3.1-8b').")
         if not base_url:
-            raise ValueError(f"APILLM needs a base_url, or {ENV_BASE_URL} set in the environment.")
-
-        self.base_url = base_url.rstrip("/")
+            raise ValueError("APILLM needs a base_url, or XMAS_BASE_URL set in the environment.")
         self.call_log = call_log
         self.backend_tag = backend_tag
-        super().__init__(model_id=model, api_url=self.base_url, api_key=api_key, **kwargs)
+        api_key = api_key or os.environ.get("XMAS_API_KEY")
+        super().__init__(model_id=model, api_url=base_url.rstrip("/"), api_key=api_key, **kwargs)
 
     def _record(self, record: CallRecord) -> None:
         """Hand one call to the collector, if there is one."""
@@ -149,8 +111,8 @@ class APILLM(_promptolution.APILLM):
         """Return what a generation is sent besides the messages, merged as promptolution merges it."""
         params: dict[str, Any] = {"max_tokens": self.max_tokens}
         params.update(self._call_kwargs)
-        for key in UNRECORDED_CALL_KWARGS:
-            params.pop(key, None)
+        # Headers can carry credentials, so they never reach a record.
+        params.pop("extra_headers", None)
         return params
 
     async def _ainvoke_once(self, prompt: str, system_prompt: str) -> ChatCompletion:
@@ -158,8 +120,7 @@ class APILLM(_promptolution.APILLM):
         completion = await super()._ainvoke_once(prompt, system_prompt)
         slot = _completion_id.get()
         if slot is not None:
-            identifier = getattr(completion, "id", None)
-            slot[0] = identifier if isinstance(identifier, str) else None
+            slot[0] = completion.id
         return completion
 
     async def _ainvoke_with_retries(self, prompt: str, system_prompt: str) -> str:
@@ -209,7 +170,7 @@ class APILLM(_promptolution.APILLM):
         except Exception as error:
             self._record(
                 CallRecord(
-                    operation=GENERATE,
+                    operation="generate",
                     model=self.model,
                     backend=self.backend_tag,
                     latency_s=time.perf_counter() - started,
@@ -229,7 +190,7 @@ class APILLM(_promptolution.APILLM):
         responses = [str(response) for response in tagged]
         self._record(
             CallRecord(
-                operation=GENERATE,
+                operation="generate",
                 model=self.model,
                 backend=self.backend_tag,
                 latency_s=latency,
@@ -311,23 +272,11 @@ class APILLM(_promptolution.APILLM):
         """The model identifier, under the name the xmas surface uses."""
         return str(self.model_id)
 
-    def _score_endpoint(self) -> str:
-        """Return the absolute URL of the scoring endpoint."""
-        return f"{self.base_url}/{SCORE_PATH}"
-
-    def _headers(self) -> dict[str, str]:
-        """Return the auth headers for a direct call."""
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        return headers
-
     def score(self, context: str, continuation: str) -> ScoredSequence:
         """Return the log-probability the model assigns to ``continuation``.
 
-        This is teacher forcing: the continuation is fixed and scored, not
-        generated. It calls the gateway's scoring endpoint, which sits next to
-        ``base_url`` and needs a backend that echoes prompt log-probabilities.
+        Teacher forcing: the continuation is fixed and scored, not generated, through
+        the gateway's ``/score`` endpoint next to ``base_url``.
 
         Args:
             context: The text the continuation is conditioned on.
@@ -337,28 +286,30 @@ class APILLM(_promptolution.APILLM):
             The continuation's per-token and aggregate log-probabilities.
 
         Raises:
-            ScoringUnsupportedError: If the endpoint reports that the configured
-                backend cannot echo prompt log-probabilities.
-            ValueError: If the continuation does not align with token boundaries,
-                or the request is otherwise rejected.
+            ValueError: If the continuation is empty.
+            XmasError: If the endpoint refuses (501 unsupported, 429 rate limited,
+                any other 4xx/5xx) or the body is malformed.
         """
         if not continuation:
             raise ValueError("Cannot score an empty continuation.")
 
         started_at = timestamp()
         started = time.perf_counter()
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         try:
             response = httpx.post(
-                self._score_endpoint(),
+                f"{self.api_url}/score",
                 json={"model": self.model, "prompt": context, "continuation": continuation},
-                headers=self._headers(),
+                headers=headers,
                 timeout=self.call_timeout_s,
             )
-            scored = self._parse_score(response)
+            scored = parse_score(response)
         except Exception as error:
             self._record(
                 CallRecord(
-                    operation=SCORE,
+                    operation="score",
                     model=self.model,
                     backend=self.backend_tag,
                     latency_s=time.perf_counter() - started,
@@ -370,7 +321,7 @@ class APILLM(_promptolution.APILLM):
             raise
         self._record(
             CallRecord(
-                operation=SCORE,
+                operation="score",
                 model=self.model,
                 backend=self.backend_tag,
                 latency_s=time.perf_counter() - started,
@@ -386,87 +337,28 @@ class APILLM(_promptolution.APILLM):
         )
         return scored
 
-    def score_batch(self, contexts: list[str], continuations: list[str]) -> list[ScoredSequence]:
-        """Score several continuations.
 
-        Sequential for now: the endpoint has no batch form, and issuing
-        concurrent requests against a metered gateway is a decision to take
-        deliberately rather than inherit.
+def parse_score(response: httpx.Response) -> ScoredSequence:
+    """Turn a scoring response into a :class:`ScoredSequence`.
 
-        Args:
-            contexts: The conditioning texts.
-            continuations: The texts to score, aligned to ``contexts``.
-
-        Returns:
-            One result per pair, in the order given.
-        """
-        pairs = zip(contexts, continuations, strict=True)
-        return [self.score(context, continuation) for context, continuation in pairs]
-
-    @staticmethod
-    def _parse_score(response: httpx.Response) -> ScoredSequence:
-        """Turn a scoring response into a :class:`ScoredSequence`.
-
-        Args:
-            response: The HTTP response.
-
-        Returns:
-            The parsed result.
-
-        Raises:
-            ScoringUnsupportedError: On a 501 capability refusal.
-            RateLimitedError: On a 429, carrying ``Retry-After`` when the endpoint
-                sent one.
-            ValueError: On any other error status or a malformed body.
-        """
-        if response.status_code == httpx.codes.NOT_IMPLEMENTED:
-            raise ScoringUnsupportedError(_error_message(response))
-        if response.status_code == httpx.codes.TOO_MANY_REQUESTS:
-            raise RateLimitedError(_error_message(response), retry_after=_retry_after(response))
-        if response.status_code >= httpx.codes.BAD_REQUEST:
-            raise ValueError(f"Scoring failed ({response.status_code}): {_error_message(response)}")
-
-        body = response.json()
-        tokens = body.get("tokens")
-        logprobs = body.get("token_logprobs")
-        if not isinstance(tokens, list) or not isinstance(logprobs, list):
-            raise ValueError(f"Scoring response is missing tokens/token_logprobs: {body!r}")
-
-        return ScoredSequence(
-            tokens=tuple(str(token) for token in tokens),
-            token_logprobs=tuple(float(value) for value in logprobs),
-        )
-
-
-def _retry_after(response: httpx.Response) -> float | None:
-    """Return the ``Retry-After`` header in seconds, if the endpoint sent a usable one.
-
-    Only the delta-seconds form is read. The HTTP-date form is legal and no
-    endpoint in this stack sends it; parsing it speculatively would add a clock
-    skew problem to a wait that is already conservative.
-
-    Args:
-        response: The HTTP response.
-
-    Returns:
-        The number of seconds to wait, or ``None``.
+    Raises:
+        XmasError: On an error status or a body without tokens/token_logprobs.
     """
-    raw = response.headers.get("Retry-After")
-    if raw is None:
-        return None
-    try:
-        return max(0.0, float(raw))
-    except ValueError:
-        return None
-
-
-def _error_message(response: httpx.Response) -> str:
-    """Extract the endpoint's own explanation, falling back to the raw body."""
-    try:
-        body = response.json()
-    except ValueError:
-        return response.text
-    error = body.get("error") if isinstance(body, dict) else None
-    if isinstance(error, dict) and "message" in error:
-        return str(error["message"])
-    return str(body)
+    status = response.status_code
+    if status == 501:
+        raise XmasError(f"llm: scoring unsupported (501): {error_message(response)}", status=501)
+    if status == 429:
+        retry_after = retry_after_seconds(response)
+        message = f"llm: rate limited (429), retry after {retry_after}s: {error_message(response)}"
+        raise XmasError(message, status=429, retry_after=retry_after)
+    if status >= 400:
+        raise XmasError(f"llm: scoring failed ({status}): {error_message(response)}", status=status)
+    body = response.json()
+    tokens = body.get("tokens")
+    logprobs = body.get("token_logprobs")
+    if not isinstance(tokens, list) or not isinstance(logprobs, list):
+        raise XmasError(f"llm: scoring response missing tokens/token_logprobs: {body!r}")
+    return ScoredSequence(
+        tokens=tuple(str(token) for token in tokens),
+        token_logprobs=tuple(float(value) for value in logprobs),
+    )
