@@ -20,7 +20,7 @@ from promptolution.utils.token_counter import get_token_counter
 from xmas.agent import Agent
 from xmas.graph import END, back_edges, join_nodes, terminal_agent
 from xmas.prompts import safe_format
-from xmas.tools import SupportsToolCalls, run_tool_loop
+from xmas.tools import run_tool_loop
 from xmas.trace import AgentRecord, TokenUsage, Trace
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -159,7 +159,7 @@ def agent_node(
         inputs = {name: state["values"].get(name, "") for name in agent.inputs}
         rendered = safe_format(template, inputs)
         calls: tuple[Any, ...] = ()
-        if agent.tools and isinstance(llm, SupportsToolCalls):  # resolve_tools checked the model can call tools
+        if agent.tools and hasattr(llm, "get_tool_response"):  # resolve_tools checked the model can call tools
             response, calls, usage = run_tool_loop(
                 llm, rendered, tools, mas.max_tool_rounds, DEFAULT_SYS_PROMPT, count_tokens
             )

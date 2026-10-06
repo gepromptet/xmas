@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from collections.abc import Sequence
+from concurrent.futures import TimeoutError as FuturesTimeout
 from contextvars import ContextVar
 from typing import Any
 
 import httpx
+import openai
 from openai.types.chat import ChatCompletion
 from promptolution.llms import api_llm as promptolution
 from promptolution.utils.templates import DEFAULT_SYS_PROMPT
 
 from xmas.errors import XmasError
-from xmas.llms.call_log import CallLog, CallRecord, approximate_tokens, timestamp
+from xmas.llms.call_log import CallLog, CallRecord
 from xmas.llms.scoring import ScoredSequence
-from xmas.tools import Tool, ToolCallRequest, complete_with_tools
-from xmas.utils import error_message, retry_after_seconds
+from xmas.tools import Tool, ToolCallRequest
+from xmas.utils import approximate_tokens, error_message, retry_after_seconds, timestamp
 
 # Completion-id plumbing: _completion_id, _Completion and the _ainvoke_once /
 # _ainvoke_with_retries overrides below exist only because promptolution's
@@ -43,25 +46,6 @@ class _Completion(str):
         instance = super().__new__(cls, text)
         instance.completion_id = completion_id
         return instance
-
-
-class RateLimitedError(RuntimeError):
-    """Raised by xmas.tools.mcp on a 429; goes once mcp raises XmasError.
-
-    Attributes:
-        retry_after: Seconds the endpoint asked the caller to wait, or ``None``
-            when it did not say.
-    """
-
-    def __init__(self, message: str, retry_after: float | None = None) -> None:
-        """Initialize the error.
-
-        Args:
-            message: The endpoint's own explanation.
-            retry_after: Value of the ``Retry-After`` header, in seconds.
-        """
-        super().__init__(message)
-        self.retry_after = retry_after
 
 
 class APILLM(promptolution.APILLM):
@@ -102,12 +86,12 @@ class APILLM(promptolution.APILLM):
         api_key = api_key or os.environ.get("XMAS_API_KEY")
         super().__init__(model_id=model, api_url=base_url.rstrip("/"), api_key=api_key, **kwargs)
 
-    def _record(self, record: CallRecord) -> None:
+    def record(self, record: CallRecord) -> None:
         """Hand one call to the collector, if there is one."""
         if self.call_log is not None:
             self.call_log.record(record)
 
-    def _call_params(self) -> dict[str, Any]:
+    def call_params(self) -> dict[str, Any]:
         """Return what a generation is sent besides the messages, merged as promptolution merges it."""
         params: dict[str, Any] = {"max_tokens": self.max_tokens}
         params.update(self._call_kwargs)
@@ -161,14 +145,14 @@ class APILLM(promptolution.APILLM):
             One response per prompt.
         """
         n_prompts = 1 if isinstance(prompts, str) else len(prompts)
-        params = self._call_params()
+        params = self.call_params()
         before = self.get_token_count()
         started_at = timestamp()
         started = time.perf_counter()
         try:
             tagged = super().get_response(prompts, system_prompts)
         except Exception as error:
-            self._record(
+            self.record(
                 CallRecord(
                     operation="generate",
                     model=self.model,
@@ -188,7 +172,7 @@ class APILLM(promptolution.APILLM):
         response_ids = [getattr(response, "completion_id", None) for response in tagged]
         # Hand the caller ordinary strings, not the tagged subclass.
         responses = [str(response) for response in tagged]
-        self._record(
+        self.record(
             CallRecord(
                 operation="generate",
                 model=self.model,
@@ -265,7 +249,91 @@ class APILLM(promptolution.APILLM):
             The message text (``""`` when the model only called tools) and the
             requested calls, in order.
         """
-        return complete_with_tools(self, messages, tools)
+        kwargs: dict[str, Any] = {"model": self.model_id, "messages": messages, "max_tokens": self.max_tokens}
+        kwargs.update(self._call_kwargs)
+        if tools:
+            kwargs["tools"] = [spec.to_openai() for spec in tools]
+        params = self.call_params()
+        started_at = timestamp()
+        started = time.perf_counter()
+        # Five seconds of slack over the batch timeout, so promptolution's own timeout fires first.
+        deadline = self.gather_timeout_s + 5.0
+        future = asyncio.run_coroutine_threadsafe(self.tool_turn_once(kwargs), self._loop)
+        try:
+            try:
+                completion = future.result(timeout=deadline)
+            except FuturesTimeout:
+                future.cancel()
+                raise TimeoutError(f"tool turn timed out after {deadline}s") from None
+        except Exception as error:
+            self.record(
+                CallRecord(
+                    operation="generate",
+                    model=self.model,
+                    backend=self.backend_tag,
+                    latency_s=time.perf_counter() - started,
+                    ok=False,
+                    error=f"{type(error).__name__}: {error}",
+                    ts=started_at,
+                    params=params,
+                )
+            )
+            raise
+        message = completion.choices[0].message
+        text = message.content or ""
+        requests = [
+            ToolCallRequest(call.id, call.function.name, call.function.arguments or "{}")
+            for call in message.tool_calls or []
+            if call.type == "function"
+        ]
+        usage = completion.usage
+        if usage is not None:
+            input_tokens = usage.prompt_tokens
+            output_tokens = usage.completion_tokens
+        else:
+            input_tokens = sum(approximate_tokens(str(item.get("content") or "")) for item in messages)
+            output_tokens = approximate_tokens(text) + sum(approximate_tokens(r.arguments) for r in requests)
+        self.input_token_count += input_tokens
+        self.output_token_count += output_tokens
+        self.record(
+            CallRecord(
+                operation="generate",
+                model=self.model,
+                backend=self.backend_tag,
+                latency_s=time.perf_counter() - started,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                ts=started_at,
+                params=params,
+                response_id=completion.id,
+            )
+        )
+        return text, requests
+
+    async def tool_turn_once(self, kwargs: dict[str, Any]) -> ChatCompletion:
+        """One chat-completions call with promptolution's timeout and backoff.
+
+        A permanent client error (any 4xx but 408 request timeout, 409 conflict
+        and 429 rate limit) is raised at once instead of being retried.
+        """
+        attempt = 0
+        while True:
+            try:
+                async with self._sem:
+                    completion: ChatCompletion = await asyncio.wait_for(
+                        self.client.chat.completions.create(**kwargs), timeout=self.call_timeout_s
+                    )
+                return completion
+            except Exception as exc:
+                permanent = (
+                    isinstance(exc, openai.APIStatusError)
+                    and 400 <= exc.status_code < 500
+                    and exc.status_code not in (408, 409, 429)
+                )
+                if permanent or attempt >= self.max_retries:
+                    raise
+                await asyncio.sleep(self.retry_base_delay_s * (2**attempt))
+                attempt += 1
 
     @property
     def model(self) -> str:
@@ -307,7 +375,7 @@ class APILLM(promptolution.APILLM):
             )
             scored = parse_score(response)
         except Exception as error:
-            self._record(
+            self.record(
                 CallRecord(
                     operation="score",
                     model=self.model,
@@ -319,7 +387,7 @@ class APILLM(promptolution.APILLM):
                 )
             )
             raise
-        self._record(
+        self.record(
             CallRecord(
                 operation="score",
                 model=self.model,
@@ -348,7 +416,7 @@ def parse_score(response: httpx.Response) -> ScoredSequence:
     if status == 501:
         raise XmasError(f"llm: scoring unsupported (501): {error_message(response)}", status=501)
     if status == 429:
-        retry_after = retry_after_seconds(response)
+        retry_after = retry_after_seconds(response.headers)
         message = f"llm: rate limited (429), retry after {retry_after}s: {error_message(response)}"
         raise XmasError(message, status=429, retry_after=retry_after)
     if status >= 400:

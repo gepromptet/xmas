@@ -24,9 +24,8 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from xmas import MAS, Agent, ToolCall
-from xmas.llms.api_llm import RateLimitedError
-from xmas.tools import ToolAccessError, ToolError
-from xmas.tools.mcp import ENV_TOOLS_KEY, MCPTools, result_text
+from xmas.errors import XmasError
+from xmas.tools.mcp import MCPTools, result_text
 
 from .test_tools import ToolMockLLM, req
 
@@ -160,35 +159,35 @@ def test_lists_tools_once_and_skips_names_openai_would_refuse(remote: MCPTools) 
 def test_envelope_results_become_text_or_tool_errors(remote: MCPTools) -> None:
     assert remote.call("run_python", {"code": "1+1"}) == "ran 1+1"
     assert remote.call("run_python", {"code": "files"}) == "wrote\n[truncated]\n[files: a.txt, b.txt]"
-    with pytest.raises(ToolError) as failed:
+    with pytest.raises(XmasError) as failed:
         remote.call("run_python", {"code": "raise"})
     assert str(failed.value) == "exit_code=1 killed=none\nTraceback: boom"
 
 
 @pytest.mark.parametrize(
-    ("code", "status", "retry", "error", "match"),
+    ("code", "status", "retry", "ends_run"),
     [
-        ("tool_not_in_scope", 403, None, ToolAccessError, "tool_not_in_scope"),
-        ("unauthorized", 401, None, ToolAccessError, "unauthorized"),
-        ("insufficient_budget", 429, None, ToolAccessError, "insufficient_budget"),
-        ("too_many_concurrent", 429, 1, RateLimitedError, "too_many_concurrent"),
-        ("invalid_arguments", 400, None, ToolError, "invalid_arguments: invalid_arguments happened"),
-        ("unknown_tool", 404, None, ToolError, "unknown_tool"),
-        ("internal_error", 500, None, ToolError, "internal_error"),
-        ("queued_heavy", 503, None, ToolError, "queued_heavy"),
-        ("container_unavailable", 503, None, ToolError, "container_unavailable"),
+        ("tool_not_in_scope", 403, None, True),
+        ("unauthorized", 401, None, True),
+        ("insufficient_budget", 429, None, True),
+        ("too_many_concurrent", 429, 1, True),
+        ("invalid_arguments", 400, None, False),
+        ("unknown_tool", 404, None, False),
+        ("internal_error", 500, None, False),
+        ("queued_heavy", 503, None, False),
+        ("container_unavailable", 503, None, False),
     ],
 )
 def test_error_bodies_map_to_the_right_error(
-    remote: MCPTools, code: str, status: int, retry: int | None, error: type[Exception], match: str
+    remote: MCPTools, code: str, status: int, retry: int | None, ends_run: bool
 ) -> None:
     arguments: dict[str, Any] = {"code": code, "status": status}
     if retry is not None:
         arguments["retry_after_s"] = retry
-    with pytest.raises(error, match=match) as raised:
+    with pytest.raises(XmasError, match=rf"mcp: {code} \({status}\): {code} happened") as raised:
         remote.call("refuse", arguments)
-    if isinstance(raised.value, RateLimitedError):
-        assert raised.value.retry_after == 1.0
+    assert (raised.value.status in (401, 403, 429)) is ends_run
+    assert raised.value.retry_after == (1.0 if retry else None)
 
 
 def test_one_session_is_shared_and_concurrency_is_capped(server: tuple[Server, str]) -> None:
@@ -213,22 +212,23 @@ def test_a_forgotten_session_is_reopened_and_the_call_resent_once(server: tuple[
 
 
 @pytest.mark.parametrize(
-    ("key", "error", "match"),
+    ("key", "status", "match"),
     [
-        ("sk-wrong", ToolAccessError, "unauthorized"),
-        ("sk-forbidden", ToolAccessError, "forbidden"),
-        ("sk-busy", RateLimitedError, "429"),
+        ("sk-wrong", 401, "unauthorized"),
+        ("sk-forbidden", 403, "forbidden"),
+        ("sk-busy", 429, "429"),
     ],
 )
-def test_http_refusals(server: tuple[Server, str], key: str, error: type[Exception], match: str) -> None:
+def test_http_refusals(server: tuple[Server, str], key: str, status: int, match: str) -> None:
     with MCPTools(server[1], key, timeout_s=20) as tools:
         started = time.monotonic()
-        with pytest.raises(error, match=match) as raised:
+        with pytest.raises(XmasError, match=match) as raised:
             tools.tools()
-        with pytest.raises(error, match=match):
+        with pytest.raises(XmasError, match=match):
             tools.call("run_python", {"code": "x"})
         assert time.monotonic() - started < 10, "a refusal must not wait for the read timeout"
-    if isinstance(raised.value, RateLimitedError):
+    assert raised.value.status == status
+    if status == 429:
         assert raised.value.retry_after == 7.0
 
 
@@ -243,17 +243,17 @@ def test_a_mas_runs_remote_tools_and_ends_on_a_refusal(remote: MCPTools) -> None
 
     llm.turns = [("", [req("refuse", '{"code": "too_many_concurrent", "status": 429, "retry_after_s": 1}')])]
     trace = mas.run("again")
-    assert trace.error == "RateLimitedError: too_many_concurrent: too_many_concurrent happened"
+    assert trace.error == "XmasError: mcp: too_many_concurrent (429): too_many_concurrent happened"
 
 
 # ------------------------------------------------------------- construction
 
 
 def test_key_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(ENV_TOOLS_KEY, "sk-env")
-    assert MCPTools("http://127.0.0.1:1/mcp")._key == "sk-env"
-    monkeypatch.delenv(ENV_TOOLS_KEY)
-    with pytest.raises(ValueError, match=ENV_TOOLS_KEY):
+    monkeypatch.setenv("XMAS_TOOLS_KEY", "sk-env")
+    assert MCPTools("http://127.0.0.1:1/mcp").session.key == "sk-env"
+    monkeypatch.delenv("XMAS_TOOLS_KEY")
+    with pytest.raises(ValueError, match="XMAS_TOOLS_KEY"):
         MCPTools("http://127.0.0.1:1/mcp")
 
 
@@ -278,16 +278,16 @@ def test_result_mapping_for_foreign_servers() -> None:
     assert result_text(plain) == "a\nb"
     image = CallToolResult(content=[ImageContent(type="image", data="AA==", mime_type="image/png")])
     assert result_text(image) == "[image content omitted]"
-    with pytest.raises(ToolError, match="went wrong"):
+    with pytest.raises(XmasError, match="went wrong"):
         result_text(CallToolResult(content=[TextContent(type="text", text="went wrong")], is_error=True))
-    with pytest.raises(ToolError, match="tool failed"):
+    with pytest.raises(XmasError, match="tool failed"):
         result_text(CallToolResult(content=[], is_error=True))
     assert result_text(as_result({"other": 1}, is_error=False)) == '{"other": 1}'
 
 
 def test_result_mapping_for_killed_runs_and_missing_retry_hint() -> None:
-    with pytest.raises(ToolError, match="exit_code=0 killed=timeout\nout"):
+    with pytest.raises(XmasError, match="exit_code=0 killed=timeout\nout"):
         result_text(as_result(envelope(0, stdout="out", killed="timeout"), is_error=True))
-    with pytest.raises(RateLimitedError) as raised:
+    with pytest.raises(XmasError) as raised:
         result_text(error_body("too_many_concurrent", 429))
     assert raised.value.retry_after is None
