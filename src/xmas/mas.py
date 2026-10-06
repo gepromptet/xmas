@@ -14,7 +14,7 @@ from xmas import runtime
 from xmas.agent import Agent
 from xmas.graph import SENTINELS, agent_names, build_graph, terminal_agent, validate_graph
 from xmas.prompts import decode_prompts, encode_prompts
-from xmas.spec import SPEC_VERSION, validate_spec
+from xmas.spec import validate_spec
 from xmas.tools import Tool, ToolIndex, ToolSource, index_tools, select_tools
 from xmas.trace import Trace
 
@@ -281,7 +281,7 @@ class MAS(BasePredictor):
         """
         ordered = agent_names(self.graph)
         return {
-            "version": SPEC_VERSION,
+            "version": 1,
             "agents": [self.agents[name].to_dict() for name in ordered],
             "edges": [[source, target] for source, target in self.graph.edges],
             "default_model": self.default_model,
