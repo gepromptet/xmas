@@ -12,7 +12,7 @@ from promptolution.optimizers.base_optimizer import BaseOptimizer
 from promptolution.utils.prompt import Prompt
 
 from xmas.mas import MAS
-from xmas.optimization.attribution import UNKNOWN, Attributor
+from xmas.optimization.attribution import Attributor
 from xmas.optimization.broker import Board, ProxyTask, Request, rounds
 from xmas.optimization.optimizer import MASOptimizer
 from xmas.optimization.updaters import AgentPromptView
@@ -222,7 +222,7 @@ class CantanteOptimizer(MASOptimizer):
         """
         width = len(rewards[0]) if rewards else 0
         names = sorted(self.mas.agents)
-        grid = {name: [[UNKNOWN] * width for _ in sets] for name in names}
+        grid = {name: [[math.nan] * width for _ in sets] for name in names}
 
         positions = sorted(traces)
         if positions and self.attributor is not None:

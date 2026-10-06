@@ -17,13 +17,6 @@ from xmas.trace import Trace
 if TYPE_CHECKING:  # pragma: no cover
     from promptolution.llms.base_llm import BaseLLM
 
-UNKNOWN = math.nan
-"""Credit for a rollout the attributor could not judge.
-
-Not zero. Zero is a verdict, "this agent did not matter", and an attributor that
-returns it after a failed parse is inventing a finding. ``nan`` propagates as an
-absence and every consumer in this package filters it out.
-"""
 
 _TAG = re.compile(r"<attribution>(.*?)</attribution>", re.DOTALL)
 
@@ -79,7 +72,7 @@ class UniformAttributor:
 
     The null hypothesis of credit assignment, and the baseline any real
     attributor has to beat. Ported from the seed's identity attributer. An agent
-    that did not run in a rollout gets :data:`UNKNOWN` for it rather than zero,
+    that did not run in a rollout gets ``nan`` for it rather than zero,
     because it earned neither credit nor blame.
     """
 
@@ -97,7 +90,7 @@ class UniformAttributor:
             raise ValueError(f"Got {len(traces)} traces and {len(rewards)} rewards; they must be parallel.")
         names = agents_in(traces)
         return {
-            name: [reward if name in trace.agents else UNKNOWN for trace, reward in zip(traces, rewards, strict=True)]
+            name: [reward if name in trace.agents else math.nan for trace, reward in zip(traces, rewards, strict=True)]
             for name in names
         }
 
@@ -203,7 +196,7 @@ class ContrastiveAttributor:
             rewards: The system-level score of each rollout.
 
         Returns:
-            Credit per rollout, keyed by agent name, with :data:`UNKNOWN` wherever
+            Credit per rollout, keyed by agent name, with ``nan`` wherever
             the judge's answer could not be read.
 
         Raises:
@@ -214,7 +207,8 @@ class ContrastiveAttributor:
         if len(traces) != len(rewards):
             raise ValueError(f"Got {len(traces)} traces and {len(rewards)} rewards; they must be parallel.")
         names = agents_in(traces)
-        credit: dict[str, list[float]] = {name: [UNKNOWN] * len(traces) for name in names}
+        # nan, not zero: zero is a verdict, nan is an absence every consumer filters out
+        credit: dict[str, list[float]] = {name: [math.nan] * len(traces) for name in names}
         if not names:
             return credit
 
