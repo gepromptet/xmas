@@ -19,8 +19,6 @@ from dataclasses import dataclass
 
 from promptolution.llms.base_llm import BaseLLM
 
-from xmas.optimization.prompts import REWRITE_PROMPT
-
 
 @dataclass(frozen=True)
 class Rewrite:
@@ -49,22 +47,43 @@ class LLMPromptSynthesizer:
     fallback, because a prompt that silently drops a variable would make the
     topology change inert again and look like it had been handled.
 
+    ``REWRITE_PROMPT`` is the instruction the meta-model gets; a subclass
+    changes it by overriding the attribute.
+
     Attributes:
         llm: The meta-model.
-        template: The rewrite prompt.
         fallbacks: How many rewrites fell back, since construction. Above zero
             means the meta-model is not reliably answering as asked.
     """
 
-    def __init__(self, llm: BaseLLM, *, template: str = REWRITE_PROMPT) -> None:
+    REWRITE_PROMPT = """# Task
+You are rewriting the prompt of one agent in a multi-agent system, because the system's topology changed and \
+the agent now receives different information than it did before.
+
+Keep the agent's job the same. Change only what is needed for it to use everything it now receives.
+
+## The agent
+Name: {agent}
+It writes: {output}
+It now receives these variables: {inputs}
+
+## Its current prompt
+{prompt}
+
+## Rules
+- Reference every variable it receives as a placeholder in curly braces, exactly as named above.
+- Do not invent placeholders for variables that are not listed.
+- Keep the instruction concise and in the same voice as the current prompt.
+- Return only the rewritten prompt inside <prompt>...</prompt>, with no commentary.
+"""
+
+    def __init__(self, llm: BaseLLM) -> None:
         """Initialize the synthesizer.
 
         Args:
             llm: The meta-model that writes the prompts.
-            template: The rewrite prompt. Defaults to the ported template.
         """
         self.llm = llm
-        self.template = template
         self.fallbacks = 0
 
     def rewrite(self, requests: list[Rewrite]) -> list[str]:
@@ -78,7 +97,7 @@ class LLMPromptSynthesizer:
         """
         if not requests:
             return []
-        responses = self.llm.get_response([rewrite_instruction(self.template, request) for request in requests])
+        responses = self.llm.get_response([rewrite_instruction(self.REWRITE_PROMPT, request) for request in requests])
         written = []
         for request, response in zip(requests, responses, strict=True):
             candidate = prompt_from_response(response, request)

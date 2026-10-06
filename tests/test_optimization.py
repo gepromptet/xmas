@@ -10,6 +10,7 @@ from promptolution.utils.prompt import Prompt
 from xmas import MAS, Agent
 from xmas.optimization import MASOptimizer, PrefixSearchOptimizer, PromptUpdater
 from xmas.optimization.attribution import UniformAttributor
+from xmas.optimization.optimizer import traces_by_position
 from xmas.optimization.prefix_search import PREFIXES
 from xmas.optimization.updaters import AgentPromptView
 from xmas.tasks.gsm8k import GSM8KTask
@@ -179,30 +180,30 @@ def test_a_fully_cached_evaluation_contributes_no_rollouts_rather_than_stale_one
     optimizer = PrefixSearchOptimizer(mas, task, attributor=UniformAttributor())
 
     optimizer.evaluate([mas])
-    assert optimizer._rollouts, "the first pass runs rollouts and records them"
+    assert optimizer.rollouts, "the first pass runs rollouts and records them"
     assert mas.last_traces, "and leaves them where the second pass would find them"
 
     optimizer.evaluate([mas])  # every cell is cached now, so nothing runs
 
-    assert optimizer._rollouts == []
+    assert optimizer.rollouts == []
 
 
 def test_alignment_refuses_to_pair_a_reconstruction_that_stopped_matching() -> None:
-    # `_align` recomputes which cells missed the task's cache from a snapshot taken
+    # `traces_by_position` recomputes which cells missed the task's cache from a snapshot taken
     # before the call, which holds only while its key shape matches promptolution's
     # own. Should that shape ever drift, every cell reads as a miss while only the
     # cells that ran have traces, and pairing them would attach every reward to the
-    # wrong rollout. Reached through the private method because the whole point is
-    # a state the public path cannot currently produce.
+    # wrong rollout. Called directly because the whole point is a state the
+    # optimizer's own path cannot currently produce.
     mas = single_agent(prefix_sensitive_llm())
-    optimizer = PrefixSearchOptimizer(mas, gsm8k_task(), attributor=UniformAttributor())
+    task = gsm8k_task()
+    optimizer = PrefixSearchOptimizer(mas, task, attributor=UniformAttributor())
     optimizer.evaluate([mas])
 
     encoded = [mas.encode(), mas.encode()]
-    grid = [[1.0] * len(ANSWERS), [1.0] * len(ANSWERS)]
 
     with pytest.raises(ValueError, match="zip"):
-        optimizer._align(mas, encoded, grid, cached=set())
+        traces_by_position(task, mas, encoded, cached=set())
 
 
 def test_credit_steers_which_agent_is_varied() -> None:
