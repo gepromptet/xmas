@@ -64,6 +64,26 @@ stays one record and fills `prompts`, `system_prompts`, `responses` instead (`ex
 
 ::: xmas.llms.scoring.SupportsScore
 
+## Tools
+
+Functions an agent may call while it answers: `Agent.tools` names resolve
+against `MAS(..., tools=[...])` when the system is built. `MCPTools` needs the
+`mcp` extra.
+
+::: xmas.tools
+    options:
+      members:
+        - Tool
+        - tool
+        - ToolSource
+        - ToolError
+        - ToolAccessError
+        - ToolCallRequest
+        - SupportsToolCalls
+        - LocalTools
+
+::: xmas.tools.mcp.MCPTools
+
 ::: xmas.llms.masking
     options:
       members:

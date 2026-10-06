@@ -129,6 +129,10 @@ def _make_node(mas: MAS, agent: Agent, count_tokens: Callable[[str], float]) -> 
         A function mapping the incoming state to this agent's state updates.
     """
     llm: BaseLLM = mas.resolve_llm(agent)
+    if agent.tools:  # an agent with tools runs the tool loop; every other agent runs the closure below
+        from xmas.tools import tool_node
+
+        return tool_node(mas, agent, llm, count_tokens)
 
     def node(state: MASState) -> dict[str, Any]:
         prompts = state.get("prompts") or {}

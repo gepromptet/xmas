@@ -15,12 +15,15 @@ from xmas.agent import Agent
 from xmas.graph import SENTINELS, agent_names, build_graph, terminal_agent, validate_graph
 from xmas.prompts import decode_prompts, encode_prompts
 from xmas.spec import SPEC_VERSION, AgentSpec, MASSpec, validate_spec
+from xmas.tools import Tool, ToolIndex, ToolSource, index_tools, select_tools
 from xmas.trace import Trace
 
 if TYPE_CHECKING:  # pragma: no cover
+    from collections.abc import Sequence
+
     from xmas._engine import CompiledGraph
 
-_Structure = tuple[tuple[tuple[str, str, str, str | None], ...], tuple[tuple[str, str], ...]]
+_Structure = tuple[tuple[tuple[str, str, str, str | None, str], ...], tuple[tuple[str, str], ...]]
 
 
 class MAS(BasePredictor):
@@ -60,6 +63,8 @@ class MAS(BasePredictor):
         llms: dict[str, BaseLLM] | None = None,
         max_steps: int = 50,
         default_model: str | None = None,
+        tools: Sequence[ToolSource | Tool] = (),
+        max_tool_rounds: int = 5,
     ) -> None:
         """Initialize a MAS.
 
@@ -74,10 +79,17 @@ class MAS(BasePredictor):
                 cannot run forever.
             default_model: Name to record for the default model when serializing.
                 Defaults to the model id ``llm`` reports.
+            tools: Tool objects and tool sources (e.g. ``MCPTools``), mixed, that
+                ``Agent.tools`` names resolve against. Runtime state like ``llm``;
+                never part of the spec.
+            max_tool_rounds: Model turns per agent visit that may request tools,
+                before one last turn with the tools withheld.
 
         Raises:
             ValueError: If names collide, an edge names an unknown agent, the
-                topology is not runnable, or an agent binds to an unknown model.
+                topology is not runnable, an agent binds to an unknown model or
+                tool, two sources offer the same tool name, or a tool-using
+                agent's model cannot call tools.
         """
         if not agents:
             raise ValueError("A MAS needs at least one agent.")
@@ -109,6 +121,32 @@ class MAS(BasePredictor):
         self._last_traces: tuple[Trace, ...] = ()
 
         super().__init__(llm=llm)  # type: ignore[arg-type]
+
+        if max_tool_rounds < 0:
+            raise ValueError("max_tool_rounds must be >= 0.")
+        self.tools = tuple(tools)
+        self.max_tool_rounds = max_tool_rounds
+        self._tool_index: tuple[tuple[ToolSource | Tool, ...], ToolIndex] | None = None
+        for agent in agents:  # fail at construction, not mid-run; tool-free systems never touch their sources
+            if agent.tools:
+                self.resolve_tools(agent)
+
+    def resolve_tools(self, agent: Agent) -> ToolIndex:
+        """Return the tools an agent may call, keyed by name.
+
+        Args:
+            agent: The agent whose tools are wanted.
+
+        Returns:
+            Each of its tools with the source that runs it.
+
+        Raises:
+            ValueError: If a name is unknown, or the agent's model cannot call tools.
+        """
+        if self._tool_index is None or self._tool_index[0] is not self.tools:
+            self._tool_index = (self.tools, index_tools(self.tools))
+        llm = self.llms.get(agent.model) if agent.model is not None else self.llm
+        return select_tools(self._tool_index[1], agent, llm)
 
     # ----------------------------------------------------------------- models
 
@@ -308,6 +346,8 @@ class MAS(BasePredictor):
             llms=self.llms,
             max_steps=self.max_steps,
             default_model=self.default_model,
+            tools=self.tools,
+            max_tool_rounds=self.max_tool_rounds,
         )
 
     # ---------------------------------------------------------- serialization
@@ -334,6 +374,7 @@ class MAS(BasePredictor):
         data: dict[str, Any],
         llm: BaseLLM | None = None,
         llms: dict[str, BaseLLM] | None = None,
+        tools: Sequence[ToolSource | Tool] = (),
     ) -> MAS:
         """Rebuild a MAS from a spec.
 
@@ -341,6 +382,7 @@ class MAS(BasePredictor):
             data: A spec produced by :meth:`to_dict`.
             llm: Default model to attach.
             llms: Models by name, resolving the spec's bindings.
+            tools: Tools and tool sources, resolving the agents' tool names.
 
         Returns:
             The reconstructed MAS.
@@ -357,6 +399,7 @@ class MAS(BasePredictor):
             llm=llm,
             llms=llms,
             default_model=spec.get("default_model"),
+            tools=tools,
         )
 
     def to_yaml(self, path: str | Path) -> None:
@@ -376,6 +419,7 @@ class MAS(BasePredictor):
         path: str | Path,
         llm: BaseLLM | None = None,
         llms: dict[str, BaseLLM] | None = None,
+        tools: Sequence[ToolSource | Tool] = (),
     ) -> MAS:
         """Read a MAS spec from a YAML file.
 
@@ -383,12 +427,13 @@ class MAS(BasePredictor):
             path: Source file.
             llm: Default model to attach.
             llms: Models by name, resolving the spec's bindings.
+            tools: Tools and tool sources, resolving the agents' tool names.
 
         Returns:
             The reconstructed MAS.
         """
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-        return cls.from_dict(data, llm=llm, llms=llms)
+        return cls.from_dict(data, llm=llm, llms=llms, tools=tools)
 
     # -------------------------------------------------------------- internals
 
@@ -405,7 +450,7 @@ class MAS(BasePredictor):
         wiring or its model, changes the graph itself.
         """
         agents = tuple(
-            (agent.name, ",".join(agent.inputs), agent.output, agent.model)
+            (agent.name, ",".join(agent.inputs), agent.output, agent.model, ",".join(agent.tools))
             for agent in sorted(self.agents.values(), key=lambda a: a.name)
         )
         return agents, tuple(sorted(self.graph.edges))

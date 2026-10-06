@@ -139,7 +139,8 @@ class GraphUpdater:
             output = outputs[name]
             prompt = parent.prompt if parent is not None else NEW_AGENT_PROMPT.format(name=name)
             model = parent.model if parent is not None else None
-            agents[name] = Agent(name, prompt, output=output, inputs=inputs[name], model=model)
+            tools = parent.tools if parent is not None else None
+            agents[name] = Agent(name, prompt, output=output, inputs=inputs[name], tools=tools, model=model)
             if parent is None or sorted(parent.inputs) != sorted(inputs[name]):
                 pending.append(Rewrite(agent=name, prompt=prompt, output=output, inputs=inputs[name]))
 
@@ -153,6 +154,8 @@ class GraphUpdater:
             llms=mas.llms,
             max_steps=mas.max_steps,
             default_model=mas.default_model,
+            tools=mas.tools,
+            max_tool_rounds=mas.max_tool_rounds,
         )
 
     def output_of(self, mas: MAS, name: str) -> str:

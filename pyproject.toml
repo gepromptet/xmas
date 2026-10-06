@@ -28,6 +28,9 @@ dependencies = [
   "httpx>=0.28",
   "langgraph>=1.2.12",
   "pyyaml>=6.0",
+  # xmas.tools builds tool schemas with pydantic directly; pinned rather than
+  # left transitive (via langgraph and openai).
+  "pydantic>=2.7",
 ]
 
 [project.urls]
@@ -53,7 +56,10 @@ packages = ["src/xmas"]
 # ---------------------------------------------------------------------------
 [project.optional-dependencies]
 vllm = ["promptolution[vllm]>=2.3.0,<3.0.0"]
+# xmas.tools.mcp.MCPTools: tools served over MCP (streamable HTTP).
+mcp = ["mcp>=2.2,<3"]
 dev = [
+  "mcp>=2.2,<3",
   "pre-commit>=4.0",
   "ruff>=0.16.9",
   "mypy>=1.14",
