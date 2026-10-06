@@ -22,7 +22,7 @@ from promptolution.utils.prompt import Prompt
 
 from xmas import MAS, Agent, MASTask
 from xmas.optimization import broker, cantante
-from xmas.optimization.attribution import UNKNOWN, UniformAttributor
+from xmas.optimization.attribution import UniformAttributor
 from xmas.optimization.cantante import CantanteOptimizer
 from xmas.trace import AgentRecord, Trace
 
@@ -276,7 +276,7 @@ def test_a_broken_inner_optimizer_does_not_hang_the_round() -> None:
 def test_unattributed_rollouts_fall_back_to_the_measured_score_and_are_counted() -> None:
     class Silent:
         def attribute(self, traces: list[Trace], rewards: list[float]) -> dict[str, list[float]]:
-            return {name: [UNKNOWN] * len(traces) for name in ("drafter", "reviewer")}
+            return {name: [math.nan] * len(traces) for name in ("drafter", "reviewer")}
 
     mas, _ = system()
     Scripted.candidates = {"drafter": [f"draft {GOOD} {{query}}", "draft {query}"]}

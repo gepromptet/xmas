@@ -4,16 +4,12 @@ from __future__ import annotations
 
 import math
 import random
-from typing import TYPE_CHECKING
 
 from xmas.agent import Agent
 from xmas.graph import START
 from xmas.mas import MAS
-from xmas.optimization.synthesis import PromptSynthesizer, Rewrite
+from xmas.optimization.synthesis import LLMPromptSynthesizer, MechanicalSynthesizer, Rewrite
 from xmas.optimization.topology import Edges, TopologyBudget, crossover, mas_edges, mutate
-
-if TYPE_CHECKING:  # pragma: no cover
-    pass
 
 NEW_AGENT_PROMPT = "You are {name}. Do your part of the task and pass on your result."
 """Seed text for an agent a mutation invented, before its prompt is written."""
@@ -22,8 +18,7 @@ NEW_AGENT_PROMPT = "You are {name}. Do your part of the task and pass on your re
 class GraphUpdater:
     """Proposes candidates that differ from a system in topology.
 
-    Implements :class:`~xmas.optimization.updaters.TopologyUpdater`. Three things
-    happen for every candidate, and skipping any one of them makes the search
+    Three things happen for every candidate, and skipping any one of them makes the search
     look like it is working while it is not:
 
     1. the edge set is mutated, by the operators ported from the seed;
@@ -41,7 +36,7 @@ class GraphUpdater:
 
     def __init__(
         self,
-        synthesizer: PromptSynthesizer,
+        synthesizer: LLMPromptSynthesizer | MechanicalSynthesizer,
         budget: TopologyBudget | None = None,
         *,
         operations: int = 1,
