@@ -42,10 +42,10 @@ class ScoredSequence:
 class SupportsScore(Protocol):
     """What a backend must offer to serve as a probe.
 
-    Declared as a protocol rather than a base class so that the probing layer
+    Declared as a protocol rather than a base class so that an evaluation layer
     depends on the *operation* and not on any one backend: :class:`~xmas.APILLM`
     satisfies it, a vLLM backend would, and so does a test double. Nothing in
-    :mod:`xmas.tasks.probing` may import a concrete model.
+    (CALINKA's, in gepromptet/calinka) may import a concrete model.
     """
 
     def score(self, context: str, continuation: str) -> ScoredSequence:
