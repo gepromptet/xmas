@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from xmas.llms.api_llm import RateLimitedError
+from xmas.llms.probe import Limiter, probe_all
 from xmas.llms.scoring import SupportsScore
 from xmas.llms.telemetry import SCORE, CallLog
 from xmas.llms.vllm_server import BACKEND_TAG, VLLMServerLLM
@@ -277,3 +278,30 @@ def test_score_batch_rides_the_batched_echo_path(monkeypatch: pytest.MonkeyPatch
     payload = seen["json"]
     assert isinstance(payload, dict)
     assert len(payload["prompt"]) == 2
+
+
+# ------------------------------------------------------------------ the probe machinery
+
+
+def test_it_plugs_into_probe_all_and_waits_out_a_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``probe_all`` sees only ``score`` and the typed limiter error, so nothing else is needed.
+
+    One refusal with ``Retry-After: 0`` is retried rather than dropped, the result
+    lands at its pair's index, and every attempt is recorded under SCORE, which is
+    the operation ``AnytimeTracker`` reads.
+    """
+    refusal = httpx.Response(
+        status_code=429,
+        json={"error": {"message": "slow down"}},
+        headers={"Retry-After": "0"},
+        request=httpx.Request("POST", BASE_URL),
+    )
+    answers = [refusal, echo_response([full_echo()])]
+    monkeypatch.setattr(httpx, "post", lambda url, **kwargs: answers.pop(0))
+    log = CallLog()
+
+    results = probe_all(build_llm(telemetry=log), [(CONTEXT, CONTINUATION)], limiter=Limiter(concurrency=1))
+
+    assert results[0] is not None
+    assert results[0].token_logprobs == tuple(SPAN_LOGPROBS)
+    assert [record.ok for record in log.by_operation(SCORE)] == [False, True]
