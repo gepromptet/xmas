@@ -27,7 +27,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Iterator
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -80,7 +80,7 @@ class ProxyTask(BaseTask):
             agent: The agent whose prompts this proxy scores.
             task: The real task, whose dataset shape the proxy mirrors so that the
                 inner optimizer subsamples and blocks exactly as it would have.
-            board: The shared board the broker watches.
+            board: The shared board the broker watches. The proxy adds itself to it.
         """
         super().__init__(
             df=task.df,
@@ -95,7 +95,8 @@ class ProxyTask(BaseTask):
         self.agent = agent
         self.board = board
         self.pending: Request | None = None
-        self._cache: dict[str, list[float]] = {}
+        self.credit: dict[str, list[float]] = {}
+        board.proxies[agent] = self
 
     def evaluate(
         self,
@@ -125,7 +126,7 @@ class ProxyTask(BaseTask):
         """
         texts = [str(prompt) for prompt in ([prompts] if not isinstance(prompts, list) else prompts)]
         if eval_strategy == "evaluated":
-            return self._result(texts, [self._cache.get(text, []) for text in texts])
+            return credit_result(texts, [self.credit.get(text, []) for text in texts])
 
         request = Request(agent=self.agent, prompts=texts)
         with self.board.condition:
@@ -139,26 +140,8 @@ class ProxyTask(BaseTask):
             raise RuntimeError(f"Attribution round failed for {self.agent!r}: {request.error}") from request.error
         scores = request.scores or []
         for text, row in zip(texts, scores, strict=False):
-            self._cache[text] = row
-        return self._result(texts, scores)
-
-    def _result(self, prompts: list[str], scores: list[list[float]]) -> EvalResult:
-        """Wrap credit rows in the result shape promptolution's optimizers read."""
-        width = max((len(row) for row in scores), default=1) or 1
-        padded = [row if len(row) == width else [*row, *([np.nan] * (width - len(row)))] for row in scores]
-        array = np.asarray(padded, dtype=float).reshape(len(prompts), width) if padded else np.zeros((len(prompts), 1))
-        lengths = np.asarray([float(len(text.split())) for text in prompts])
-        input_tokens = np.repeat(lengths[:, None], width, axis=1)
-        output_tokens = np.zeros_like(input_tokens)
-        return EvalResult(
-            scores=array,
-            agg_scores=np.nanmean(array, axis=1),
-            sequences=np.full((len(prompts), width), "", dtype=object),
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            agg_input_tokens=np.nanmean(input_tokens, axis=1),
-            agg_output_tokens=np.nanmean(output_tokens, axis=1),
-        )
+            self.credit[text] = row
+        return credit_result(texts, scores)
 
     def take(self) -> Request | None:
         """Remove and return the unanswered request, if there is one."""
@@ -172,6 +155,7 @@ class ProxyTask(BaseTask):
             request.error = request.error or RuntimeError("The optimization round was cancelled.")
             request.done.set()
 
+    # promptolution's abstract hook on BaseTask; the underscore name is promptolution's.
     def _evaluate(self, xs: list[str], ys: list[str], preds: list[str]) -> np.ndarray:
         """Never called; the proxy answers from the broker, not from predictions."""
         raise NotImplementedError("A ProxyTask is answered by the broker, not by scoring predictions.")
@@ -189,10 +173,6 @@ class Board:
         """Initialize an empty board."""
         self.condition = threading.Condition()
         self.proxies: dict[str, ProxyTask] = {}
-
-    def register(self, proxy: ProxyTask) -> None:
-        """Add one agent's proxy to the board."""
-        self.proxies[proxy.agent] = proxy
 
     def collect(self) -> dict[str, Request]:
         """Take every posted request. Caller must hold the condition."""
@@ -214,27 +194,10 @@ class Board:
                 proxy.cancel()
 
 
-SETTLE_TIMEOUT_S = 10.0
-"""How long a posted request waits for its peers before the round serves without them.
-
-A backstop rather than a schedule: a round normally closes the moment the last
-worker arrives. This bounds the case where one of them is doing something slow, so
-the round degrades to a smaller batch instead of stalling behind it.
-"""
-
-POLL_INTERVAL_S = 0.25
-"""How often the broker rechecks while a round is settling."""
-
-
-def _still_working(workers: list[Future[Any]], parked: int) -> int:
-    """Return how many workers are neither finished nor parked on a request."""
-    return sum(1 for worker in workers if not worker.done()) - parked
-
-
 def rounds(
     board: Board,
     workers: list[Future[Any]],
-    settle_timeout: float = SETTLE_TIMEOUT_S,
+    settle_timeout: float = 10.0,
 ) -> Iterator[dict[str, Request]]:
     """Yield each batch of pending requests until every worker has finished.
 
@@ -256,7 +219,10 @@ def rounds(
         board: The shared board.
         workers: The futures running the per-agent optimizers.
         settle_timeout: Seconds a posted request waits for its peers before the
-            round is served without them.
+            round is served without them. A backstop rather than a schedule: a
+            round normally closes the moment the last worker arrives; this bounds
+            the case where one of them is slow, so the round degrades to a smaller
+            batch instead of stalling behind it.
 
     Yields:
         Pending requests keyed by agent, at least one per yield.
@@ -272,30 +238,34 @@ def rounds(
                 if parked:
                     if deadline is None:
                         deadline = time.monotonic() + settle_timeout
-                    if _still_working(workers, parked) <= 0 or time.monotonic() >= deadline:
+                    if sum(1 for worker in workers if not worker.done()) <= parked or time.monotonic() >= deadline:
                         break
                 else:
-                    failed = next((worker for worker in workers if worker.done() and worker.exception()), None)
-                    if failed is not None:
-                        raise failed.exception() or RuntimeError("A worker failed without an exception.")
+                    for worker in workers:
+                        error = worker.exception() if worker.done() else None
+                        if error is not None:
+                            raise error
                     if all(worker.done() for worker in workers):
                         return
-                board.condition.wait(timeout=POLL_INTERVAL_S)
+                board.condition.wait(timeout=0.25)
             batch = board.collect()
         yield batch
 
 
-def run_workers(
-    executor: ThreadPoolExecutor,
-    steps: dict[str, Any],
-) -> list[Future[Any]]:
-    """Start one worker per agent.
-
-    Args:
-        executor: The pool to run them on.
-        steps: Zero-argument callables keyed by agent name.
-
-    Returns:
-        The futures, in the order the agents were given.
-    """
-    return [executor.submit(step) for step in steps.values()]
+def credit_result(prompts: list[str], scores: list[list[float]]) -> EvalResult:
+    """Wrap credit rows in the result shape promptolution's optimizers read."""
+    width = max((len(row) for row in scores), default=1) or 1
+    padded = [row if len(row) == width else [*row, *([np.nan] * (width - len(row)))] for row in scores]
+    array = np.asarray(padded, dtype=float).reshape(len(prompts), width) if padded else np.zeros((len(prompts), 1))
+    lengths = np.asarray([float(len(text.split())) for text in prompts])
+    input_tokens = np.repeat(lengths[:, None], width, axis=1)
+    output_tokens = np.zeros_like(input_tokens)
+    return EvalResult(
+        scores=array,
+        agg_scores=np.nanmean(array, axis=1),
+        sequences=np.full((len(prompts), width), "", dtype=object),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        agg_input_tokens=np.nanmean(input_tokens, axis=1),
+        agg_output_tokens=np.nanmean(output_tokens, axis=1),
+    )

@@ -35,7 +35,8 @@ GOOD = "GOOD"
 class Counting(MASTask):
     """Scores one if the terminal output says the answer, zero otherwise."""
 
-    def _evaluate(self, xs: list[str], ys: list[str], preds: list[str]) -> np.ndarray:
+    def reward(self, xs: list[str], ys: list[str], preds: list[str]) -> np.ndarray:
+        """One if the prediction contains the target."""
         return np.asarray([1.0 if str(y) in str(pred) else 0.0 for y, pred in zip(ys, preds, strict=True)])
 
 

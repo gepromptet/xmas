@@ -273,7 +273,8 @@ def test_an_unusable_response_falls_back_rather_than_failing_the_search() -> Non
 class ShapeTask(MASTask):
     """Rewards a system for having the shape the search is supposed to find."""
 
-    def _evaluate(self, xs: list[str], ys: list[str], preds: list[str]) -> np.ndarray:
+    def reward(self, xs: list[str], ys: list[str], preds: list[str]) -> np.ndarray:
+        """One if a helper's output reached the prediction."""
         return np.asarray([1.0 if "helper" in str(pred) else 0.0 for pred in preds])
 
 
