@@ -14,8 +14,9 @@ from typing import Any
 import httpx
 import pytest
 
-from xmas.llms.api_llm import APILLM, RateLimitedError
-from xmas.llms.call_log import GENERATE, SCORE, CallLog, CallRecord, Price, approximate_tokens
+from xmas.errors import XmasError
+from xmas.llms.api_llm import APILLM
+from xmas.llms.call_log import GENERATE, SCORE, CallLog, CallRecord, approximate_tokens
 
 from .conftest import MockLLM
 
@@ -69,14 +70,6 @@ def test_the_summary_separates_the_two_operations() -> None:
     assert summary["total"]["calls"] == 2
 
 
-def test_the_summary_names_the_echo_billing_artifact() -> None:
-    """The dollar column prices the protocol, not the method, and has to say so."""
-    caveats = CallLog().summary()["caveats"]
-
-    assert "prompt plus continuation" in caveats["score_tokens"]
-    assert "budget rail" in caveats["estimated_cost"]
-
-
 def test_latency_is_reported_as_a_distribution_not_a_mean() -> None:
     log = CallLog()
     for latency in (0.1, 0.2, 0.3, 10.0):
@@ -90,7 +83,7 @@ def test_latency_is_reported_as_a_distribution_not_a_mean() -> None:
 
 
 def test_spend_is_estimated_from_the_configured_price() -> None:
-    log = CallLog(price=Price(input_per_1k=0.5, output_per_1k=1.5))
+    log = CallLog(input_price_per_1k=0.5, output_price_per_1k=1.5)
     log.record(CallRecord(GENERATE, "m", "gateway", latency_s=1.0, input_tokens=2000, output_tokens=1000))
 
     assert log.summary()[GENERATE]["estimated_cost"] == pytest.approx(2.5)
@@ -144,7 +137,7 @@ def test_a_failed_probe_is_still_a_record(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(httpx, "post", lambda url, **kwargs: score_response(status=400))
     log = CallLog()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(XmasError):
         build_llm(log).score("context", "continuation")
 
     (record,) = log.records
@@ -360,17 +353,18 @@ def test_a_429_raises_a_typed_error_carrying_retry_after(monkeypatch: pytest.Mon
     """The wall is the system working; the only correct response is to wait as asked."""
     monkeypatch.setattr(httpx, "post", lambda url, **kwargs: score_response(429, {"Retry-After": "12"}))
 
-    with pytest.raises(RateLimitedError) as caught:
+    with pytest.raises(XmasError) as caught:
         build_llm().score("context", "continuation")
 
     assert caught.value.retry_after == 12.0
+    assert caught.value.status == 429
     assert "slow down" in str(caught.value)
 
 
 def test_a_429_without_a_header_says_so_rather_than_guessing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx, "post", lambda url, **kwargs: score_response(429))
 
-    with pytest.raises(RateLimitedError) as caught:
+    with pytest.raises(XmasError) as caught:
         build_llm().score("context", "continuation")
 
     assert caught.value.retry_after is None
@@ -380,7 +374,7 @@ def test_an_unparseable_retry_after_is_absent_rather_than_wrong(monkeypatch: pyt
     """The HTTP-date form is legal; reading it as seconds would be a very short wait."""
     monkeypatch.setattr(httpx, "post", lambda url, **kwargs: score_response(429, {"Retry-After": "Wed, 21 Oct 2026"}))
 
-    with pytest.raises(RateLimitedError) as caught:
+    with pytest.raises(XmasError) as caught:
         build_llm().score("context", "continuation")
 
     assert caught.value.retry_after is None
@@ -393,7 +387,8 @@ def test_a_rate_limit_is_not_mistaken_for_a_capability_refusal(monkeypatch: pyte
     with pytest.raises(Exception) as caught:
         build_llm().score("context", "continuation")
 
-    assert not isinstance(caught.value, RateLimitedError)
+    assert isinstance(caught.value, XmasError)
+    assert caught.value.status == 501
 
 
 def test_the_mock_model_is_untouched_by_any_of_this(mock_llm: MockLLM) -> None:

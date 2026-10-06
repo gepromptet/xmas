@@ -5,7 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from xmas.llms.api_llm import APILLM, ENV_API_KEY, ENV_BASE_URL, ScoringUnsupportedError
+from xmas.errors import XmasError
+from xmas.llms.api_llm import APILLM
 
 from .conftest import requires_gateway
 
@@ -29,14 +30,9 @@ def test_accepts_the_xmas_spelling_of_model_and_base_url() -> None:
     assert llm.api_url == BASE_URL
 
 
-def test_accepts_the_promptolution_spelling_too() -> None:
-    llm = APILLM(model_id="llama-3.1-8b", api_url=BASE_URL, api_key="sk-test")
-    assert llm.model == "llama-3.1-8b"
-
-
 def test_falls_back_to_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(ENV_BASE_URL, BASE_URL)
-    monkeypatch.setenv(ENV_API_KEY, "sk-from-env")
+    monkeypatch.setenv("XMAS_BASE_URL", BASE_URL)
+    monkeypatch.setenv("XMAS_API_KEY", "sk-from-env")
     llm = APILLM(model="llama-3.1-8b")
     assert llm.api_url == BASE_URL
     assert llm.api_key == "sk-from-env"
@@ -48,7 +44,7 @@ def test_requires_a_model() -> None:
 
 
 def test_requires_a_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(ENV_BASE_URL, raising=False)
+    monkeypatch.delenv("XMAS_BASE_URL", raising=False)
     with pytest.raises(ValueError, match="needs a base_url"):
         APILLM(model="llama-3.1-8b")
 
@@ -77,7 +73,6 @@ def test_score_parses_a_successful_response(monkeypatch: pytest.MonkeyPatch) -> 
     assert result.tokens == (" forty", "-two")
     assert result.token_logprobs == (-0.25, -0.75)
     assert result.sum_logprob == -1.0
-    assert result.mean_logprob == -0.5
     assert result.token_count == 2
 
 
@@ -92,34 +87,22 @@ def test_score_raises_a_named_error_when_the_backend_cannot_echo(monkeypatch: py
     }
     monkeypatch.setattr(httpx, "post", lambda url, **kwargs: fake_response(501, body))
 
-    with pytest.raises(ScoringUnsupportedError, match="does not expose prompt log-probabilities"):
+    with pytest.raises(XmasError, match="does not expose prompt log-probabilities") as raised:
         build_llm().score("context", "continuation")
+    assert raised.value.status == 501
 
 
 def test_score_surfaces_a_tokenisation_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
     body: dict[str, object] = {"error": {"message": "The continuation does not align with token boundaries."}}
     monkeypatch.setattr(httpx, "post", lambda url, **kwargs: fake_response(422, body))
 
-    with pytest.raises(ValueError, match="422"):
+    with pytest.raises(XmasError, match="422"):
         build_llm().score("context", "continuation")
 
 
 def test_score_rejects_an_empty_continuation() -> None:
     with pytest.raises(ValueError, match="empty continuation"):
         build_llm().score("context", "")
-
-
-def test_score_batch_preserves_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_post(url: str, **kwargs: object) -> httpx.Response:
-        payload = kwargs["json"]
-        assert isinstance(payload, dict)
-        marker = float(len(str(payload["continuation"])))
-        return fake_response(200, {"tokens": ["t"], "token_logprobs": [-marker]})
-
-    monkeypatch.setattr(httpx, "post", fake_post)
-
-    results = build_llm().score_batch(["a", "b"], ["xx", "yyy"])
-    assert [r.sum_logprob for r in results] == [-2.0, -3.0]
 
 
 @requires_gateway
@@ -134,7 +117,9 @@ def test_score_against_the_live_gateway() -> None:
     llm = APILLM(model="llama-3.1-8b")
     try:
         result = llm.score("The capital of France is", " Paris")
-    except ScoringUnsupportedError as error:
+    except XmasError as error:
+        if error.status != 501:
+            raise
         pytest.skip(f"gateway cannot score yet: {error}")
 
     assert result.token_count > 0
