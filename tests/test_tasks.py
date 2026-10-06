@@ -36,7 +36,7 @@ def gsm8k_frame() -> pd.DataFrame:
 
 def test_scores_a_correct_answer_regardless_of_surrounding_text() -> None:
     task = GSM8KTask(gsm8k_frame())
-    scores = task._evaluate(
+    scores = task.reward(
         xs=["", ""],
         ys=["17 * 23 = 391\n#### 391", "100 - 42 = 58\n#### 58"],
         preds=["The answer is 391.", "58"],
@@ -47,23 +47,23 @@ def test_scores_a_correct_answer_regardless_of_surrounding_text() -> None:
 def test_numeric_tolerance_accepts_a_differently_formatted_number() -> None:
     """The seed repos' exact-match scorer marked this wrong; formatting is not arithmetic."""
     task = GSM8KTask(gsm8k_frame())
-    assert task._evaluate(xs=[""], ys=["#### 18"], preds=["18.0"]).tolist() == [1.0]
-    assert task._evaluate(xs=[""], ys=["#### 1234"], preds=["1,234"]).tolist() == [1.0]
+    assert task.reward(xs=[""], ys=["#### 18"], preds=["18.0"]).tolist() == [1.0]
+    assert task.reward(xs=[""], ys=["#### 1234"], preds=["1,234"]).tolist() == [1.0]
 
 
 def test_a_wrong_answer_scores_zero() -> None:
     task = GSM8KTask(gsm8k_frame())
-    assert task._evaluate(xs=[""], ys=["#### 391"], preds=["390"]).tolist() == [0.0]
+    assert task.reward(xs=[""], ys=["#### 391"], preds=["390"]).tolist() == [0.0]
 
 
 def test_unparseable_output_falls_back_to_string_equality() -> None:
     task = GSM8KTask(gsm8k_frame())
-    assert task._evaluate(xs=[""], ys=["yes"], preds=["yes"]).tolist() == [1.0]
-    assert task._evaluate(xs=[""], ys=["yes"], preds=["no"]).tolist() == [0.0]
+    assert task.reward(xs=[""], ys=["yes"], preds=["yes"]).tolist() == [1.0]
+    assert task.reward(xs=[""], ys=["yes"], preds=["no"]).tolist() == [0.0]
 
 
 def test_missing_columns_are_rejected() -> None:
-    with pytest.raises(ValueError, match="missing columns"):
+    with pytest.raises(ValueError, match="has no 'question' column"):
         GSM8KTask(pd.DataFrame({"q": ["x"], "a": ["y"]}))
 
 
