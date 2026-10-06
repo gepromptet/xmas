@@ -1,9 +1,8 @@
-"""The result type shared by every backend's ``score``, and the protocol that names it."""
+"""The result type shared by every backend's ``score``."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
 
 
 @dataclass(frozen=True)
@@ -37,17 +36,3 @@ class ScoredSequence:
     def token_count(self) -> int:
         """Number of scored tokens."""
         return len(self.tokens)
-
-
-class SupportsScore(Protocol):
-    """What a backend must offer to serve as a probe.
-
-    Declared as a protocol rather than a base class so that the probing layer
-    depends on the *operation* and not on any one backend: :class:`~xmas.APILLM`
-    satisfies it, a vLLM backend would, and so does a test double. Nothing in
-    :mod:`xmas.tasks.probing` may import a concrete model.
-    """
-
-    def score(self, context: str, continuation: str) -> ScoredSequence:
-        """Return the log-probability the model assigns to ``continuation``."""
-        ...
