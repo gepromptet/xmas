@@ -10,10 +10,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from xmas.llms.api_llm import RateLimitedError
+from xmas.errors import XmasError
+from xmas.llms.call_log import CallLog
 from xmas.llms.probe import Limiter, probe_all
-from xmas.llms.scoring import SupportsScore
-from xmas.llms.telemetry import SCORE, CallLog
 from xmas.llms.vllm_server import BACKEND_TAG, VLLMServerLLM
 
 BASE_URL = "https://releagpu01.example/v1"
@@ -88,18 +87,6 @@ def capture(monkeypatch: pytest.MonkeyPatch, response: httpx.Response) -> dict[s
 
 
 # ------------------------------------------------------------------ the request
-
-
-def test_it_satisfies_the_scoring_protocol() -> None:
-    """The probing layer depends on the operation, not on this class.
-
-    Checked by assignment rather than ``isinstance``: ``SupportsScore`` is not
-    runtime-checkable, and a static check is the stronger one anyway, since it
-    covers the signature and not merely the presence of an attribute. mypy runs
-    over ``tests/``, so this line fails the type job if the contract drifts.
-    """
-    scorer: SupportsScore = build_llm()
-    assert callable(scorer.score)
 
 
 def test_the_probe_asks_for_an_echo_and_decodes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -229,11 +216,11 @@ def test_a_batched_request_is_recorded_as_one_call_carrying_every_prompt(monkeyp
     capture(monkeypatch, echo_response([full_echo(), full_echo()]))
     log = CallLog()
 
-    build_llm(telemetry=log).score_many([(CONTEXT, CONTINUATION), (CONTEXT, CONTINUATION)])
+    build_llm(call_log=log).score_many([(CONTEXT, CONTINUATION), (CONTEXT, CONTINUATION)])
 
-    assert len(log) == 1
+    assert len(log.records) == 1
     record = log.records[0]
-    assert record.operation == SCORE
+    assert record.operation == "score"
     assert record.backend == BACKEND_TAG, "probes from the vLLM path must not pool with the gateway's"
     assert record.n_prompts == 2
     assert record.output_tokens == 0
@@ -248,9 +235,9 @@ def test_a_failed_request_is_recorded_before_it_raises(monkeypatch: pytest.Monke
     log = CallLog()
 
     with pytest.raises(ValueError, match="Scoring failed"):
-        build_llm(telemetry=log).score(CONTEXT, CONTINUATION)
+        build_llm(call_log=log).score(CONTEXT, CONTINUATION)
 
-    assert len(log) == 1
+    assert len(log.records) == 1
     assert not log.records[0].ok
 
 
@@ -263,9 +250,10 @@ def test_a_429_raises_the_typed_limiter_error(monkeypatch: pytest.MonkeyPatch) -
     )
     monkeypatch.setattr(httpx, "post", lambda url, **kwargs: response)
 
-    with pytest.raises(RateLimitedError) as caught:
+    with pytest.raises(XmasError) as caught:
         build_llm().score(CONTEXT, CONTINUATION)
 
+    assert caught.value.status == 429
     assert caught.value.retry_after == 7.0
 
 
@@ -287,7 +275,7 @@ def test_it_plugs_into_probe_all_and_waits_out_a_429(monkeypatch: pytest.MonkeyP
     """``probe_all`` sees only ``score`` and the typed limiter error, so nothing else is needed.
 
     One refusal with ``Retry-After: 0`` is retried rather than dropped, the result
-    lands at its pair's index, and every attempt is recorded under SCORE, which is
+    lands at its pair's index, and every attempt is recorded under ``"score"``, which is
     the operation ``AnytimeTracker`` reads.
     """
     refusal = httpx.Response(
@@ -300,8 +288,8 @@ def test_it_plugs_into_probe_all_and_waits_out_a_429(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(httpx, "post", lambda url, **kwargs: answers.pop(0))
     log = CallLog()
 
-    results = probe_all(build_llm(telemetry=log), [(CONTEXT, CONTINUATION)], limiter=Limiter(concurrency=1))
+    results = probe_all(build_llm(call_log=log), [(CONTEXT, CONTINUATION)], limiter=Limiter(concurrency=1))
 
     assert results[0] is not None
     assert results[0].token_logprobs == tuple(SPAN_LOGPROBS)
-    assert [record.ok for record in log.by_operation(SCORE)] == [False, True]
+    assert [record.ok for record in log.records if record.operation == "score"] == [False, True]

@@ -22,13 +22,12 @@ from typing import Any
 
 import httpx
 
-from xmas.llms.api_llm import APILLM, RateLimitedError, _error_message, _retry_after
+from xmas.errors import XmasError
+from xmas.llms.api_llm import APILLM
+from xmas.llms.call_log import CallRecord
 from xmas.llms.masking import mask_logprobs
 from xmas.llms.scoring import ScoredSequence
-from xmas.llms.telemetry import SCORE, CallRecord, approximate_tokens
-
-COMPLETIONS_PATH = "completions"
-"""Route that echoes prompt log-probabilities, resolved relative to ``base_url``."""
+from xmas.utils import approximate_tokens, error_message, retry_after_seconds, timestamp
 
 ENV_BASE_URL = "XMAS_VLLM_BASE_URL"
 """Environment variable holding the vLLM server's base URL.
@@ -58,7 +57,7 @@ DEFAULT_SCORE_BATCH = 32
 """Continuations sent per HTTP request when scoring many at once."""
 
 BACKEND_TAG = "vllm-server"
-"""What this backend calls itself in a :class:`~xmas.llms.telemetry.CallRecord`.
+"""What this backend calls itself in a :class:`~xmas.llms.call_log.CallRecord`.
 
 Distinct from the gateway's tag so that probes from the two serving paths are
 never pooled into one latency or cost statistic.
@@ -103,7 +102,7 @@ class VLLMServerLLM(APILLM):
                 ``XMAS_VLLM_API_KEY``, and to a placeholder when that is unset.
             score_batch_size: Continuations per request in :meth:`score_many`.
             **kwargs: Forwarded to :class:`~xmas.llms.api_llm.APILLM`, including
-                ``telemetry``. ``backend_tag`` defaults to :data:`BACKEND_TAG`.
+                ``call_log``. ``backend_tag`` defaults to :data:`BACKEND_TAG`.
 
         Raises:
             ValueError: If ``score_batch_size`` is not positive, or no base URL
@@ -123,7 +122,7 @@ class VLLMServerLLM(APILLM):
 
     def _completions_endpoint(self) -> str:
         """Return the absolute URL of the echo-capable completions route."""
-        return f"{self.base_url}/{COMPLETIONS_PATH}"
+        return f"{self.api_url}/completions"
 
     def _payload(self, prompts: list[str]) -> dict[str, Any]:
         """Return the request body for an echo-only scoring call.
@@ -159,7 +158,7 @@ class VLLMServerLLM(APILLM):
             The continuation's per-token and aggregate log-probabilities.
 
         Raises:
-            RateLimitedError: On a 429, carrying ``Retry-After`` when sent.
+            XmasError: On a 429 (``status`` 429), carrying ``Retry-After`` as ``retry_after`` when sent.
             ValueError: If the continuation is empty, does not align with the
                 server's token boundaries, or the request is rejected.
         """
@@ -168,8 +167,8 @@ class VLLMServerLLM(APILLM):
     def score_batch(self, contexts: list[str], continuations: list[str]) -> list[ScoredSequence]:
         """Score several continuations over the batched echo path.
 
-        Overrides the sequential gateway form: a vLLM server takes many prompts
-        per request, so this delegates to :meth:`score_many`.
+        A vLLM server takes many prompts per request, so this delegates to
+        :meth:`score_many`.
 
         Args:
             contexts: The conditioning texts.
@@ -194,7 +193,7 @@ class VLLMServerLLM(APILLM):
             One result per pair, in the order given.
 
         Raises:
-            RateLimitedError: On a 429, carrying ``Retry-After`` when sent.
+            XmasError: On a 429 (``status`` 429), carrying ``Retry-After`` as ``retry_after`` when sent.
             ValueError: If any continuation is empty, does not align with token
                 boundaries, or the request is rejected.
         """
@@ -221,31 +220,36 @@ class VLLMServerLLM(APILLM):
         Returns:
             One result per pair, in the order given.
         """
+        started_at = timestamp()
         started = time.perf_counter()
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
         try:
             response = httpx.post(
                 self._completions_endpoint(),
                 json=self._payload([context + continuation for context, continuation in chunk]),
-                headers=self._headers(),
+                headers=headers,
                 timeout=self.call_timeout_s,
             )
             scored = self._parse_echo(response, chunk)
         except Exception as error:
-            self._record(
+            self.record(
                 CallRecord(
-                    operation=SCORE,
+                    operation="score",
                     model=self.model,
                     backend=self.backend_tag,
                     latency_s=time.perf_counter() - started,
                     n_prompts=len(chunk),
                     ok=False,
                     error=f"{type(error).__name__}: {error}",
+                    ts=started_at,
                 )
             )
             raise
-        self._record(
+        self.record(
             CallRecord(
-                operation=SCORE,
+                operation="score",
                 model=self.model,
                 backend=self.backend_tag,
                 latency_s=time.perf_counter() - started,
@@ -255,6 +259,7 @@ class VLLMServerLLM(APILLM):
                 output_tokens=0,
                 scored_tokens=sum(result.token_count for result in scored),
                 n_prompts=len(chunk),
+                ts=started_at,
             )
         )
         return scored
@@ -271,13 +276,15 @@ class VLLMServerLLM(APILLM):
             One result per pair.
 
         Raises:
-            RateLimitedError: On a 429, carrying ``Retry-After`` when sent.
+            XmasError: On a 429 (``status`` 429), carrying ``Retry-After`` as ``retry_after`` when sent.
             ValueError: On any other error status, a malformed body, a choice
                 count that does not match the request, or a continuation that
                 does not fall on token boundaries.
         """
         if response.status_code == httpx.codes.TOO_MANY_REQUESTS:
-            raise RateLimitedError(_error_message(response), retry_after=_retry_after(response))
+            retry_after = retry_after_seconds(response.headers)
+            message = f"llm: rate limited (429), retry after {retry_after}s: {error_message(response)}"
+            raise XmasError(message, status=429, retry_after=retry_after)
         if response.status_code >= httpx.codes.BAD_REQUEST:
             raise ValueError(f"Scoring failed ({response.status_code}): {response.text}")
 

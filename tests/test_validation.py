@@ -12,7 +12,7 @@ import pytest
 from xmas import MAS, Agent
 from xmas.graph import build_graph, validate_graph
 from xmas.prompts import decode_prompts, encode_prompts
-from xmas.spec import SPEC_VERSION, validate_spec
+from xmas.spec import validate_spec
 
 from .conftest import MockLLM
 
@@ -121,7 +121,7 @@ def test_a_bound_model_is_resolved_over_the_default(mock_llm: MockLLM) -> None:
 def test_an_agent_without_a_model_or_default_is_an_error() -> None:
     mas = MAS.from_dict(
         {
-            "version": SPEC_VERSION,
+            "version": 1,
             "agents": [{"name": "a", "prompt": "p", "output": "prediction"}],
             "edges": [],
         }
@@ -154,13 +154,13 @@ def test_spec_rejects_an_unsupported_version() -> None:
 def test_spec_rejects_malformed_agents_and_edges() -> None:
     good = {"name": "a", "prompt": "p", "output": "o"}
     with pytest.raises(ValueError, match="needs a string"):
-        validate_spec({"agents": [{"name": "a", "prompt": "p", "output": 1}]})
+        Agent.from_dict({"name": "a", "prompt": "p", "output": 1})
     with pytest.raises(ValueError, match="list of strings"):
-        validate_spec({"agents": [{**good, "inputs": "query"}]})
+        Agent.from_dict({**good, "inputs": "query"})
     with pytest.raises(ValueError, match="two-element list"):
         validate_spec({"agents": [good], "edges": [["a"]]})
     with pytest.raises(ValueError, match="'model' to be a string"):
-        validate_spec({"agents": [{**good, "model": 3}]})
+        Agent.from_dict({**good, "model": 3})
     with pytest.raises(ValueError, match="not a mapping"):
         validate_spec({"agents": ["nope"]})
 

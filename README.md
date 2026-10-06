@@ -34,10 +34,10 @@ uv sync
 ```
 
 The core depends on `promptolution` and little else. Heavy backends live behind
-extras, mirroring promptolution's own `[api]` / `[vllm]` / `[transformers]` split:
+extras:
 
 ```bash
-uv sync --extra vllm     # vLLM backend
+uv sync --extra mcp      # MCPTools: tools served over MCP
 ```
 
 ## Quickstart
@@ -128,7 +128,7 @@ credential.
 ## Development
 
 ```bash
-uv sync --extra dev                        # create .venv and install everything
+uv sync                                    # create .venv and install everything
 uv run pre-commit install --install-hooks -t pre-commit -t commit-msg
 uv run pytest                             # tests
 uv run ruff check . && uv run ruff format --check .   # lint + format

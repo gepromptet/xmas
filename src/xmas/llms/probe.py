@@ -1,8 +1,7 @@
 """Teacher forcing through the gateway, at a concurrency the key allows.
 
-xmas's `APILLM.score()` is one HTTP call for one (context, continuation) pair, and its
-`score_batch` is deliberately sequential, so throughput is the caller's business. This
-is that caller.
+xmas's `APILLM.score()` is one HTTP call for one (context, continuation) pair, so
+throughput is the caller's business. This is that caller.
 
 Three properties, in the order they matter:
 
@@ -26,8 +25,11 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
+from xmas.errors import XmasError
+
 if TYPE_CHECKING:  # pragma: no cover
-    from xmas.llms.scoring import ScoredSequence, SupportsScore
+    from xmas.llms.api_llm import APILLM
+    from xmas.llms.scoring import ScoredSequence
 
 DEFAULT_CONCURRENCY = 32
 """In-flight probes. Sized to the run key; ask before raising it."""
@@ -103,14 +105,14 @@ def _wait_for(error: Exception, attempt: int) -> float:
     are already serialized behind one shared cool-off, so they do not need to be
     spread out, and jitter would only make the wait harder to account for.
     """
-    asked = getattr(error, "retry_after", None)
+    asked = error.retry_after if isinstance(error, XmasError) else None
     if asked is not None:
         return min(float(asked), MAX_BACKOFF_S)
     return float(min(BACKOFF_BASE_S * (2 ** (attempt - 1)), MAX_BACKOFF_S))
 
 
 def probe_all(
-    scorer: SupportsScore,
+    scorer: APILLM,
     pairs: Sequence[tuple[str, str]],
     limiter: Limiter | None = None,
     on_error: Callable[[int, Exception], None] | None = None,
@@ -118,7 +120,7 @@ def probe_all(
     """Score every (context, continuation) pair, concurrently, in order.
 
     Args:
-        scorer: Anything satisfying xmas's SupportsScore, i.e. an APILLM.
+        scorer: An APILLM, or a subclass such as VLLMServerLLM.
         pairs: (context, continuation) tuples.
         limiter: Shared Limiter. One per run, not one per call, or the concurrency cap
             would apply per batch instead of to the key.
@@ -163,11 +165,8 @@ def _retryable(error: Exception) -> bool:
     a malformed request, no — those return the same answer however long you wait, and
     retrying them is how a run turns one configuration error into a thousand calls.
     """
-    name = type(error).__name__
-    if name == "ScoringUnsupportedError":
-        return False
-    if name == "RateLimitedError":
-        return True
+    if isinstance(error, XmasError):
+        return error.status == 429
     # xmas raises ValueError for a rejected request AND for a continuation that
     # does not align with token boundaries. Neither is fixed by waiting.
     return not isinstance(error, ValueError)

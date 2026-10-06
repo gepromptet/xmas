@@ -15,9 +15,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  UV_FROZEN: "1"
-
 jobs:
   lint:
     name: Lint and format
@@ -27,8 +24,8 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: uv.lock
-      - run: uv sync --extra dev
+          cache-dependency-glob: pyproject.toml
+      - run: uv sync
       - name: ruff check
         run: uv run ruff check --output-format=github .
       - name: ruff format
@@ -42,8 +39,8 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: uv.lock
-      - run: uv sync --extra dev
+          cache-dependency-glob: pyproject.toml
+      - run: uv sync
       - run: uv run mypy
 
   test:
@@ -54,8 +51,8 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: uv.lock
-      - run: uv sync --extra dev
+          cache-dependency-glob: pyproject.toml
+      - run: uv sync
       - name: pytest
         run: uv run pytest --cov --cov-report=term-missing
 
@@ -67,8 +64,8 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: uv.lock
-      - run: uv sync --extra dev
+          cache-dependency-glob: pyproject.toml
+      - run: uv sync
       - name: mkdocs build (strict)
         run: uv run mkdocs build --strict
 

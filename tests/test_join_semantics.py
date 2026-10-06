@@ -65,7 +65,7 @@ def test_without_deferral_the_join_node_runs_twice(monkeypatch: pytest.MonkeyPat
     original defect. If someone deletes the ``defer`` argument, the test above
     keeps passing only if this one starts failing, so the pair pins the fix.
     """
-    monkeypatch.setattr("xmas._engine.join_nodes", lambda graph: set())
+    monkeypatch.setattr("xmas.runtime.join_nodes", lambda graph: set())
 
     mas = unequal_depth_mas(mock_llm)
     trace = mas.run("q")

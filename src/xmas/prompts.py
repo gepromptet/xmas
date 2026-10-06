@@ -1,7 +1,7 @@
 """Prompt rendering and prompt-set encoding.
 
-``safe_format`` and ``extract_placeholders`` are adapted from CANTANTE by Tom
-Zehle (https://github.com/finitearth/cantante); they exist because a prompt that
+``safe_format`` is adapted from CANTANTE by Tom Zehle
+(https://github.com/finitearth/cantante); it exists because a prompt that
 contains JSON or Markdown braces must survive substitution.
 
 The encoding functions solve a different problem. promptolution evaluates a
@@ -14,30 +14,6 @@ N=1 degenerate case exact rather than merely analogous.
 from __future__ import annotations
 
 import re
-
-AGENT_HEADER = "<<<xmas:agent {name}>>>"
-"""Header line that introduces one agent's prompt in an encoded prompt set."""
-
-_HEADER_MARKER = "<<<xmas:agent "
-
-# A placeholder is a bare identifier in single braces. The lookarounds leave
-# doubled braces alone, so `{{literal}}` survives untouched, and the identifier
-# class means a JSON body like {"k": 1} is never mistaken for a placeholder.
-_PLACEHOLDER = re.compile(r"(?<!\{)\{([A-Za-z_][A-Za-z0-9_]*)\}(?!\})")
-
-_HEADER_LINE = re.compile(r"^<<<xmas:agent (.+?)>>>$", re.MULTILINE)
-
-
-def extract_placeholders(template: str) -> set[str]:
-    """Return the ``{placeholder}`` names appearing in a template.
-
-    Args:
-        template: A prompt template.
-
-    Returns:
-        The set of simple identifier placeholders found.
-    """
-    return {match.group(1) for match in _PLACEHOLDER.finditer(template)}
 
 
 def safe_format(template: str, values: dict[str, str]) -> str:
@@ -56,11 +32,14 @@ def safe_format(template: str, values: dict[str, str]) -> str:
     Returns:
         The rendered string.
     """
-
-    def substitute(match: re.Match[str]) -> str:
-        return values.get(match.group(1), match.group(0))
-
-    return _PLACEHOLDER.sub(substitute, template)
+    # A placeholder is a bare identifier in single braces. The lookarounds leave
+    # doubled braces alone, so `{{literal}}` survives untouched, and the identifier
+    # class means a JSON body like {"k": 1} is never mistaken for a placeholder.
+    return re.sub(
+        r"(?<!\{)\{([A-Za-z_][A-Za-z0-9_]*)\}(?!\})",
+        lambda match: values.get(match.group(1), match.group(0)),
+        template,
+    )
 
 
 def encode_prompts(prompts: dict[str, str]) -> str:
@@ -84,9 +63,9 @@ def encode_prompts(prompts: dict[str, str]) -> str:
         raise ValueError("Cannot encode an empty prompt set.")
 
     for name, text in prompts.items():
-        if _HEADER_MARKER in text:
+        if "<<<xmas:agent " in text:
             raise ValueError(
-                f"The prompt for {name!r} contains the reserved marker {_HEADER_MARKER!r}, "
+                f"The prompt for {name!r} contains the reserved marker '<<<xmas:agent ', "
                 "which would be read back as an agent header."
             )
         if ">>>" in name or "\n" in name:
@@ -95,7 +74,7 @@ def encode_prompts(prompts: dict[str, str]) -> str:
     if len(prompts) == 1:
         return next(iter(prompts.values()))
 
-    sections = [f"{AGENT_HEADER.format(name=name)}\n{text}" for name, text in prompts.items()]
+    sections = [f"<<<xmas:agent {name}>>>\n{text}" for name, text in prompts.items()]
     return "\n".join(sections)
 
 
@@ -117,8 +96,19 @@ def decode_prompts(encoded: str, agents: list[str]) -> dict[str, str]:
     if not agents:
         raise ValueError("Cannot decode a prompt set without knowing the agents.")
 
-    matches = list(_HEADER_LINE.finditer(encoded))
-    if not matches:
+    decoded: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    for line in encoded.split("\n"):
+        if line.startswith("<<<xmas:agent ") and line.endswith(">>>"):
+            name = line.removeprefix("<<<xmas:agent ").removesuffix(">>>")
+            if name not in agents:
+                raise ValueError(f"Prompt set names unknown agent {name!r}; expected one of {sorted(agents)}.")
+            current = []
+            decoded[name] = current
+        elif current is not None:
+            current.append(line)
+
+    if not decoded:
         if len(agents) != 1:
             raise ValueError(
                 f"Prompt set has no agent headers, so it can only belong to a single-agent "
@@ -126,14 +116,4 @@ def decode_prompts(encoded: str, agents: list[str]) -> dict[str, str]:
             )
         return {agents[0]: encoded}
 
-    known = set(agents)
-    decoded: dict[str, str] = {}
-    for index, match in enumerate(matches):
-        name = match.group(1)
-        if name not in known:
-            raise ValueError(f"Prompt set names unknown agent {name!r}; expected one of {sorted(known)}.")
-        start = match.end() + 1  # skip the newline that follows the header
-        end = matches[index + 1].start() - 1 if index + 1 < len(matches) else len(encoded)
-        decoded[name] = encoded[start : max(start, end)]
-
-    return decoded
+    return {name: "\n".join(lines) for name, lines in decoded.items()}

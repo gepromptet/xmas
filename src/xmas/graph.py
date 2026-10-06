@@ -15,36 +15,8 @@ START = "__start__"
 END = "__end__"
 """Terminal sentinel. Every agent with no successor is wired to it."""
 
-SENTINELS = frozenset({START, END})
+SENTINELS = (START, END)
 """The node names reserved by xmas; an agent may not use either."""
-
-
-def _reachable(graph: nx.DiGraph[str], source: str, *, forward: bool) -> set[str]:
-    """Return every node reachable from ``source``, following edges either way.
-
-    Written out rather than calling ``nx.descendants``/``nx.ancestors`` because
-    the networkx stubs type those as taking ``Graph[object]``, which a
-    ``DiGraph[str]`` is not. A six-line traversal keeps the public signatures
-    honest about nodes being agent names.
-
-    Args:
-        graph: The topology.
-        source: Node to start from.
-        forward: Follow successors when true, predecessors when false.
-
-    Returns:
-        The reachable nodes, excluding ``source`` itself.
-    """
-    step = graph.successors if forward else graph.predecessors
-    seen: set[str] = set()
-    stack = list(step(source))
-    while stack:
-        node = stack.pop()
-        if node in seen:
-            continue
-        seen.add(node)
-        stack.extend(step(node))
-    return seen
 
 
 def build_graph(agents: list[str], edges: list[tuple[str, str]]) -> nx.DiGraph[str]:
@@ -66,7 +38,7 @@ def build_graph(agents: list[str], edges: list[tuple[str, str]]) -> nx.DiGraph[s
         ValueError: If an edge names an unknown agent, or an agent name collides
             with a sentinel.
     """
-    reserved = SENTINELS.intersection(agents)
+    reserved = [name for name in agents if name in SENTINELS]
     if reserved:
         raise ValueError(f"Agent names {sorted(reserved)} are reserved sentinels.")
     duplicates = {name for name in agents if agents.count(name) > 1}
@@ -76,7 +48,7 @@ def build_graph(agents: list[str], edges: list[tuple[str, str]]) -> nx.DiGraph[s
     graph: nx.DiGraph[str] = nx.DiGraph()
     graph.add_nodes_from([START, *agents, END])
 
-    known = set(agents) | SENTINELS
+    known = {*agents, *SENTINELS}
     for source, target in edges:
         for node in (source, target):
             if node not in known:
@@ -116,15 +88,16 @@ def validate_graph(graph: nx.DiGraph[str]) -> None:
     if graph.out_degree(END) != 0:
         raise ValueError(f"{END!r} must have no outgoing edges.")
 
-    agents = set(graph.nodes) - SENTINELS
+    agents = set(graph.nodes).difference(SENTINELS)
     if not agents:
         raise ValueError("Topology has no agents.")
 
-    unreachable = agents - _reachable(graph, START, forward=True)
+    # The networkx stubs type these as taking Graph[object], which DiGraph[str] is not.
+    unreachable = agents - nx.descendants(graph, START)  # type: ignore[arg-type]
     if unreachable:
         raise ValueError(f"Agents unreachable from {START!r}: {sorted(unreachable)}.")
 
-    dead_ends = agents - _reachable(graph, END, forward=False)
+    dead_ends = agents - nx.ancestors(graph, END)  # type: ignore[arg-type]
     if dead_ends:
         raise ValueError(f"Agents that never reach {END!r}: {sorted(dead_ends)}.")
 
@@ -139,26 +112,10 @@ def agent_names(graph: nx.DiGraph[str]) -> list[str]:
         Agent names, topologically sorted where the graph is acyclic and sorted
         by name otherwise, so serialization is stable.
     """
-    agents = set(graph.nodes) - SENTINELS
+    agents = set(graph.nodes).difference(SENTINELS)
     if nx.is_directed_acyclic_graph(graph):
         return [node for node in nx.topological_sort(graph) if node in agents]
     return sorted(agents)
-
-
-def _pending(graph: nx.DiGraph[str], node: str) -> list[str]:
-    """Return a node's successors ready to be consumed by ``pop``.
-
-    Reversed, because ``pop`` takes from the tail and the traversal is specified
-    to visit successors in ascending order.
-
-    Args:
-        graph: The topology.
-        node: The node whose successors are wanted.
-
-    Returns:
-        The successors, in descending order.
-    """
-    return sorted(graph.successors(node), reverse=True)
 
 
 def back_edges(graph: nx.DiGraph[str]) -> set[tuple[str, str]]:
@@ -168,7 +125,7 @@ def back_edges(graph: nx.DiGraph[str]) -> set[tuple[str, str]]:
     :data:`START`: an edge to a node that is still open on the search stack. They
     are the only edges a run may decline to follow, so identifying them is what
     turns a cyclic topology from an infinite loop into a retry loop. See
-    :mod:`xmas._engine` for how they compile.
+    :mod:`xmas.runtime` for how they compile.
 
     Which of a cycle's edges is the closing one is a real decision, not
     bookkeeping: the back edge is the conditional one, so it decides which agent
@@ -185,12 +142,14 @@ def back_edges(graph: nx.DiGraph[str]) -> set[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
     finished: set[str] = set()
     for root in [START, *sorted(graph.nodes)]:
-        if root not in graph or root in finished:
+        if root in finished:
             continue
         # Iterative DFS. `open_nodes` is the current stack as a set, so an edge
         # into it is an edge into an ancestor, which is the definition of a back
         # edge. Recursion is avoided because a mutated topology can be deep.
-        stack: list[tuple[str, list[str]]] = [(root, _pending(graph, root))]
+        # Successors are reversed because `pop` takes from the tail and the
+        # traversal visits them in ascending order.
+        stack: list[tuple[str, list[str]]] = [(root, sorted(graph.successors(root), reverse=True))]
         open_nodes = {root}
         while stack:
             node, pending = stack[-1]
@@ -203,7 +162,7 @@ def back_edges(graph: nx.DiGraph[str]) -> set[tuple[str, str]]:
             if target in open_nodes:
                 found.add((node, target))
             elif target not in finished:
-                stack.append((target, _pending(graph, target)))
+                stack.append((target, sorted(graph.successors(target), reverse=True)))
                 open_nodes.add(target)
     return found
 
@@ -242,10 +201,12 @@ def join_nodes(graph: nx.DiGraph[str]) -> set[str]:
     Returns:
         Names of agents with more than one distinct forward predecessor.
     """
-    agents = set(graph.nodes) - SENTINELS
     back = back_edges(graph)
-    counts = {agent: sum(1 for source in graph.predecessors(agent) if (source, agent) not in back) for agent in agents}
-    return {agent for agent, count in counts.items() if count > 1}
+    return {
+        agent
+        for agent in set(graph.nodes).difference(SENTINELS)
+        if sum((source, agent) not in back for source in graph.predecessors(agent)) > 1
+    }
 
 
 def terminal_agent(graph: nx.DiGraph[str]) -> str:

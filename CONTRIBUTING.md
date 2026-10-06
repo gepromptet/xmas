@@ -6,14 +6,12 @@ of the rules, so there is little to memorize.
 ## Setup
 
 ```bash
-uv sync --extra dev
+uv sync
 uv run pre-commit install --install-hooks -t pre-commit -t commit-msg
 ```
 
-`uv sync --extra dev` creates `.venv` and installs the project plus the tooling. The
-`dev` extra is a real extra rather than a PEP 735 dependency group, mirroring
-promptolution's layout, which is why the flag is explicit: uv auto-installs default
-*groups*, not default *extras*.
+`uv sync` creates `.venv` and installs the project plus the tooling: `dev` is a
+PEP 735 dependency group, and uv installs it by default.
 Both hook types matter: `pre-commit` formats and checks the diff, `commit-msg` validates
 the commit message.
 
@@ -70,14 +68,12 @@ House rules the tools do not catch:
 ## Dependencies
 
 Add runtime dependencies with `uv add <pkg>`, tooling with
-`uv add --optional dev <pkg>`, and backend-specific ones with
-`uv add --optional <extra> <pkg>`. All of them update `pyproject.toml` and `uv.lock`. `uv.lock` is
-committed so CI and every contributor resolve identical versions; a pre-commit hook fails
-if it drifts out of sync with `pyproject.toml`.
+`uv add --dev <pkg>`, and backend-specific ones with
+`uv add --optional <extra> <pkg>`. All of them update `pyproject.toml`. `uv.lock` is
+not committed: it stays local, and CI resolves from `pyproject.toml`.
 
 Keep the runtime dependency list short. `promptolution` is a deliberate hard dependency
-(xmas subclasses its base classes); anything heavy goes behind an extra, following
-promptolution's own `[api]` / `[vllm]` / `[transformers]` pattern.
+(xmas subclasses its base classes); anything heavy goes behind an extra.
 
 Note that promptolution 2.2.3 declares `>=3.10,<3.13`, so xmas is pinned to Python 3.12
 until promptolution widens its supported range.
