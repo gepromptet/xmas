@@ -32,7 +32,7 @@ import openai
 from promptolution.utils.templates import DEFAULT_SYS_PROMPT
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 
-from xmas.llms.telemetry import GENERATE, CallRecord, approximate_tokens, timestamp
+from xmas.llms.call_log import GENERATE, CallRecord, approximate_tokens, timestamp
 from xmas.prompts import safe_format
 from xmas.trace import AgentRecord, TokenUsage, ToolCall
 
@@ -40,10 +40,10 @@ if TYPE_CHECKING:  # pragma: no cover
     from openai.types.chat import ChatCompletion
     from promptolution.llms.base_llm import BaseLLM
 
-    from xmas._engine import MASState
     from xmas.agent import Agent
     from xmas.llms.api_llm import APILLM
     from xmas.mas import MAS
+    from xmas.runtime import MASState
 
 __all__ = [
     "TOOL_NAME",

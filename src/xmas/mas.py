@@ -10,7 +10,7 @@ import yaml
 from promptolution.llms.base_llm import BaseLLM
 from promptolution.predictors.base_predictor import BasePredictor
 
-from xmas import _engine
+from xmas import runtime
 from xmas.agent import Agent
 from xmas.graph import SENTINELS, agent_names, build_graph, terminal_agent, validate_graph
 from xmas.prompts import decode_prompts, encode_prompts
@@ -21,7 +21,7 @@ from xmas.trace import Trace
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Sequence
 
-    from xmas._engine import CompiledGraph
+    from xmas.runtime import CompiledGraph
 
 _Structure = tuple[tuple[tuple[str, str, str, str | None, str], ...], tuple[tuple[str, str], ...]]
 
@@ -200,7 +200,7 @@ class MAS(BasePredictor):
         Returns:
             The trace, whose ``output`` field is what :meth:`__call__` returns.
         """
-        return _engine.run_one(self, query, self.prompts())
+        return runtime.run_one(self, query, self.prompts())
 
     def run_batch(self, queries: list[str]) -> list[Trace]:
         """Run the MAS over several inputs, concurrently where the LLM allows.
@@ -212,7 +212,7 @@ class MAS(BasePredictor):
             One trace per query, in the order given.
         """
         prompts = self.prompts()
-        traces = _engine.run_many(self, queries, [prompts] * len(queries))
+        traces = runtime.run_many(self, queries, [prompts] * len(queries))
         self._last_traces = tuple(traces)
         return traces
 
@@ -276,7 +276,7 @@ class MAS(BasePredictor):
 
         names = list(self.agents)
         decoded = [decode_prompts(item, names) for item in encoded]
-        traces = _engine.run_many(self, list(xs), decoded)
+        traces = runtime.run_many(self, list(xs), decoded)
         self._last_traces = tuple(traces)
 
         preds = self._extract_preds([trace.output for trace in traces])
@@ -464,7 +464,7 @@ class MAS(BasePredictor):
         """
         current = self.structure
         if self._compiled is None or self._structure != current:
-            self._compiled = _engine.compile_mas(self)
+            self._compiled = runtime.compile_mas(self)
             self._structure = current
         return self._compiled
 

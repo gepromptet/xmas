@@ -5,9 +5,9 @@ Each backend subclasses its promptolution counterpart and adds exactly one thing
 """
 
 from xmas.llms.api_llm import APILLM, RateLimitedError, ScoringUnsupportedError
+from xmas.llms.call_log import CallLog, CallRecord, Price
 from xmas.llms.masking import assistant_span, mask_logprobs
 from xmas.llms.scoring import ScoredSequence
-from xmas.llms.telemetry import CallLog, CallRecord, Price
 
 __all__ = [
     "APILLM",

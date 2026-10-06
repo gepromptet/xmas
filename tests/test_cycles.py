@@ -11,7 +11,7 @@ from __future__ import annotations
 import networkx as nx
 import pytest
 
-import xmas._engine as engine
+import xmas.runtime as engine
 from xmas import MAS, Agent
 from xmas.graph import END, SENTINELS, START, back_edges, build_graph, forward_predecessors, join_nodes
 

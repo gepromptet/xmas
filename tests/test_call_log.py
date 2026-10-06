@@ -15,16 +15,16 @@ import httpx
 import pytest
 
 from xmas.llms.api_llm import APILLM, RateLimitedError
-from xmas.llms.telemetry import GENERATE, SCORE, CallLog, CallRecord, Price, approximate_tokens
+from xmas.llms.call_log import GENERATE, SCORE, CallLog, CallRecord, Price, approximate_tokens
 
 from .conftest import MockLLM
 
 BASE_URL = "https://gateway.example/v1"
 
 
-def build_llm(telemetry: CallLog | None = None) -> APILLM:
+def build_llm(call_log: CallLog | None = None) -> APILLM:
     """A gateway model with no network behind it."""
-    return APILLM(model="llama-3.1-8b", base_url=BASE_URL, api_key="sk-test", telemetry=telemetry)
+    return APILLM(model="llama-3.1-8b", base_url=BASE_URL, api_key="sk-test", call_log=call_log)
 
 
 def score_response(status: int = 200, headers: dict[str, str] | None = None) -> httpx.Response:
@@ -213,7 +213,7 @@ def chat_llm(log: CallLog, sent: list[dict[str, Any]], **kwargs: Any) -> APILLM:
         model="llama-3.1-8b",
         base_url=BASE_URL,
         api_key="sk-test",
-        telemetry=log,
+        call_log=log,
         max_retries=0,
         client_kwargs={"http_client": client},
         **kwargs,

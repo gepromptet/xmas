@@ -20,10 +20,7 @@ classifiers = [
 # base classes, so single-agent xmas *is* promptolution and its optimizers plug in
 # without ports. Compatible range: track 2.x, refuse the next major.
 dependencies = [
-  # [api] pulls openai + requests, which promptolution.llms imports at package
-  # level. APILLM is xmas's default path to the gateway, so it is core rather
-  # than an extra; the genuinely heavy backends stay behind extras (P6).
-  "promptolution[api]>=2.3.0,<3.0.0",
+  "promptolution>=2.3.0,<3.0.0",
   "networkx>=3.7",
   "httpx>=0.28",
   "langgraph>=1.2.12",
@@ -31,6 +28,10 @@ dependencies = [
   # xmas.tools builds tool schemas with pydantic directly; pinned rather than
   # left transitive (via langgraph and openai).
   "pydantic>=2.7",
+  # Imported directly by src (api_llm.py, tools, tasks); bounds follow promptolution's.
+  "openai>=1.0.0",
+  "numpy>=1.26.0,<3.0.0",
+  "pandas>=2.2.2",
 ]
 
 [project.urls]
@@ -50,16 +51,18 @@ path = "src/xmas/__init__.py"
 packages = ["src/xmas"]
 
 # ---------------------------------------------------------------------------
-# Optional extras, mirroring promptolution's [api]/[vllm]/[transformers] pattern:
-# a minimal core, heavy backends opted into explicitly. More will follow as the
-# core package lands.
+# Optional extras: a minimal core, heavy backends opted into explicitly.
 # ---------------------------------------------------------------------------
 [project.optional-dependencies]
-vllm = ["promptolution[vllm]>=2.3.0,<3.0.0"]
-# xmas.tools.mcp.MCPTools: tools served over MCP (streamable HTTP).
-mcp = ["mcp>=2.2,<3"]
+# xmas.tools.mcp.MCPTools: tools served over MCP (streamable HTTP). tools/mcp.py
+# imports httpx2 directly, so it is declared rather than left transitive via mcp.
+mcp = ["mcp>=2.2,<3", "httpx2>=2.10.0"]
+
+# Tooling. A PEP 735 group, so a plain `uv sync` installs it.
+[dependency-groups]
 dev = [
   "mcp>=2.2,<3",
+  "httpx2>=2.10.0",
   "pre-commit>=4.0",
   "ruff>=0.16.9",
   "mypy>=1.14",

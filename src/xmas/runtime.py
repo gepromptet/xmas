@@ -1,4 +1,4 @@
-"""Private execution engine.
+"""Compile a MAS and run it.
 
 The topology compiles to a LangGraph state graph here and nowhere else. No type
 from langgraph crosses back out: callers receive a :class:`~xmas.trace.Trace`,

@@ -13,8 +13,8 @@ from openai.types.chat import ChatCompletion
 from promptolution.llms import api_llm as _promptolution
 from promptolution.utils.templates import DEFAULT_SYS_PROMPT
 
+from xmas.llms.call_log import GENERATE, SCORE, CallLog, CallRecord, approximate_tokens, timestamp
 from xmas.llms.scoring import ScoredSequence
-from xmas.llms.telemetry import GENERATE, SCORE, CallLog, CallRecord, approximate_tokens, timestamp
 from xmas.tools import Tool, ToolCallRequest, complete_with_tools
 
 ENV_BASE_URL = "XMAS_BASE_URL"
@@ -102,7 +102,7 @@ class APILLM(_promptolution.APILLM):
         model: str | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
-        telemetry: CallLog | None = None,
+        call_log: CallLog | None = None,
         backend_tag: str = "gateway",
         **kwargs: Any,
     ) -> None:
@@ -115,7 +115,7 @@ class APILLM(_promptolution.APILLM):
                 Defaults to the ``XMAS_BASE_URL`` environment variable.
             api_key: API key. Defaults to the ``XMAS_API_KEY`` environment
                 variable. Never read from a file in the repository.
-            telemetry: Collector for per-call statistics. ``None`` records
+            call_log: Collector for per-call statistics. ``None`` records
                 nothing, which is the default so that ordinary use pays no
                 attention to instrumentation.
             backend_tag: What this backend calls itself in a record. Calls from
@@ -136,14 +136,14 @@ class APILLM(_promptolution.APILLM):
             raise ValueError(f"APILLM needs a base_url, or {ENV_BASE_URL} set in the environment.")
 
         self.base_url = base_url.rstrip("/")
-        self.telemetry = telemetry
+        self.call_log = call_log
         self.backend_tag = backend_tag
         super().__init__(model_id=model, api_url=self.base_url, api_key=api_key, **kwargs)
 
     def _record(self, record: CallRecord) -> None:
         """Hand one call to the collector, if there is one."""
-        if self.telemetry is not None:
-            self.telemetry.record(record)
+        if self.call_log is not None:
+            self.call_log.record(record)
 
     def _call_params(self) -> dict[str, Any]:
         """Return what a generation is sent besides the messages, merged as promptolution merges it."""
@@ -266,7 +266,7 @@ class APILLM(_promptolution.APILLM):
         """
         prompt_list = [prompts] if isinstance(prompts, str) else list(prompts)
         known_ids = response_ids if response_ids and any(i is not None for i in response_ids) else None
-        capture = self.telemetry is not None and self.telemetry.capture_text
+        capture = self.call_log is not None and self.call_log.capture_text
         if system_prompts is None:
             system_prompts = DEFAULT_SYS_PROMPT
         system_list = [system_prompts] * len(prompt_list) if isinstance(system_prompts, str) else list(system_prompts)

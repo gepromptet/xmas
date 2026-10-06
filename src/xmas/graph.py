@@ -168,7 +168,7 @@ def back_edges(graph: nx.DiGraph[str]) -> set[tuple[str, str]]:
     :data:`START`: an edge to a node that is still open on the search stack. They
     are the only edges a run may decline to follow, so identifying them is what
     turns a cyclic topology from an infinite loop into a retry loop. See
-    :mod:`xmas._engine` for how they compile.
+    :mod:`xmas.runtime` for how they compile.
 
     Which of a cycle's edges is the closing one is a real decision, not
     bookkeeping: the back edge is the conditional one, so it decides which agent

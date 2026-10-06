@@ -18,7 +18,7 @@ from pydantic import Field
 
 from xmas import END, MAS, START, Agent, ToolCall
 from xmas.llms.api_llm import APILLM, RateLimitedError
-from xmas.llms.telemetry import CallLog, timestamp
+from xmas.llms.call_log import CallLog, timestamp
 from xmas.optimization.graph_updater import GraphUpdater
 from xmas.optimization.synthesis import MechanicalSynthesizer
 from xmas.optimization.topology import TopologyBudget
@@ -530,7 +530,7 @@ def completion(content: str | None, calls: list[dict[str, Any]] | None = None, u
 
 def api_llm(monkeypatch: pytest.MonkeyPatch, answers: list[Any]) -> tuple[APILLM, list[dict[str, Any]], CallLog]:
     log = CallLog()
-    llm = APILLM(model="m", base_url="https://gateway.example/v1", api_key="k", telemetry=log, retry_base_delay_s=0)
+    llm = APILLM(model="m", base_url="https://gateway.example/v1", api_key="k", call_log=log, retry_base_delay_s=0)
     sent: list[dict[str, Any]] = []
 
     async def create(**kwargs: Any) -> ChatCompletion:
