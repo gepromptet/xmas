@@ -8,8 +8,8 @@ import random
 from typing import TYPE_CHECKING
 
 from xmas.mas import MAS
-from xmas.optimization.base import MASOptimizer
 from xmas.optimization.graph_updater import GraphUpdater
+from xmas.optimization.optimizer import MASOptimizer
 
 if TYPE_CHECKING:  # pragma: no cover
     from xmas.optimization.attribution import Attributor

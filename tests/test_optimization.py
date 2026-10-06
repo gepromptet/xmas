@@ -8,9 +8,10 @@ from promptolution.optimizers.base_optimizer import BaseOptimizer
 from promptolution.utils.prompt import Prompt
 
 from xmas import MAS, Agent
-from xmas.optimization import AgentPromptView, MASOptimizer, PrefixSearchOptimizer, PromptUpdater
+from xmas.optimization import MASOptimizer, PrefixSearchOptimizer, PromptUpdater
 from xmas.optimization.attribution import UniformAttributor
-from xmas.optimization.reference import PREFIXES
+from xmas.optimization.prefix_search import PREFIXES
+from xmas.optimization.updaters import AgentPromptView
 from xmas.tasks.gsm8k import GSM8KTask
 from xmas.trace import Trace
 

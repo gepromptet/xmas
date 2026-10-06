@@ -13,8 +13,8 @@ from promptolution.utils.prompt import Prompt
 
 from xmas.mas import MAS
 from xmas.optimization.attribution import UNKNOWN, Attributor
-from xmas.optimization.base import MASOptimizer
 from xmas.optimization.broker import Board, ProxyTask, Request, rounds
+from xmas.optimization.optimizer import MASOptimizer
 from xmas.optimization.updaters import AgentPromptView
 from xmas.prompts import encode_prompts
 

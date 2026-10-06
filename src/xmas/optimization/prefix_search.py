@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from xmas.mas import MAS
 from xmas.optimization.attribution import Attributor
-from xmas.optimization.base import MASOptimizer
+from xmas.optimization.optimizer import MASOptimizer
 from xmas.tasks.base import MASTask
 
 PREFIXES: tuple[str, ...] = (
