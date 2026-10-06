@@ -111,7 +111,7 @@ def test_a_prompt_that_always_loops_stops_at_the_visit_cap() -> None:
 
     assert trace.error is None
     visits = [record.agent for record in trace.records].count("checker")
-    assert visits == engine.MAX_NODE_VISITS
+    assert visits == mas.max_visits
 
 
 def test_an_unequal_depth_join_still_runs_once_inside_a_cyclic_topology() -> None:
@@ -149,7 +149,7 @@ def test_counting_back_edges_as_joins_defers_an_agent_that_should_not_wait(monke
     correct = order()
 
     def naive(graph: nx.DiGraph[str]) -> set[str]:
-        return {node for node in set(graph.nodes) - SENTINELS if graph.in_degree(node) > 1}
+        return {node for node in set(graph.nodes).difference(SENTINELS) if graph.in_degree(node) > 1}
 
     monkeypatch.setattr(engine, "join_nodes", naive)
     assert naive(build_graph(["a", "b", "c"], edges)) == {"b", "c"}

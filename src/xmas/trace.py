@@ -1,14 +1,12 @@
 """Execution records produced by a MAS run.
 
 A trace is the input an :class:`~xmas.optimization.Attributor` computes on, so it
-is modelled as data rather than as a log: every field is a plain value, the whole
-structure round-trips through :meth:`Trace.to_dict`, and nothing in it is
-formatted for human reading.
+is modelled as data rather than as a log: every field is a plain value.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -30,14 +28,6 @@ class TokenUsage:
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
         )
-
-    def to_dict(self) -> dict[str, int]:
-        """Return the plain-data form."""
-        return {
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "total_tokens": self.total_tokens,
-        }
 
 
 @dataclass(frozen=True)
@@ -84,24 +74,9 @@ class AgentRecord:
     inputs: dict[str, str]
     outputs: dict[str, str]
     tool_calls: tuple[ToolCall, ...] = ()
-    usage: TokenUsage = field(default_factory=TokenUsage)
+    usage: TokenUsage = TokenUsage()
     model: str | None = None
     raw_response: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return the plain-data form."""
-        return {
-            "agent": self.agent,
-            "step": self.step,
-            "prompt": self.prompt,
-            "rendered_prompt": self.rendered_prompt,
-            "inputs": dict(self.inputs),
-            "outputs": dict(self.outputs),
-            "tool_calls": [call.to_dict() for call in self.tool_calls],
-            "usage": self.usage.to_dict(),
-            "model": self.model,
-            "raw_response": self.raw_response,
-        }
 
 
 @dataclass(frozen=True)
@@ -137,10 +112,11 @@ class Trace:
     @property
     def agents(self) -> tuple[str, ...]:
         """Names of the agents that ran, in first-execution order."""
-        seen: dict[str, None] = {}
+        names: list[str] = []
         for record in self.records:
-            seen.setdefault(record.agent, None)
-        return tuple(seen)
+            if record.agent not in names:
+                names.append(record.agent)
+        return tuple(names)
 
     @property
     def usage(self) -> TokenUsage:
@@ -154,12 +130,3 @@ class Trace:
     def failed(self) -> bool:
         """Whether the run ended in an error."""
         return self.error is not None
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return the plain-data form, suitable for JSON or YAML."""
-        return {
-            "query": self.query,
-            "output": self.output,
-            "records": [record.to_dict() for record in self.records],
-            "error": self.error,
-        }
