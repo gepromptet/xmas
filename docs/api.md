@@ -56,9 +56,9 @@ Per-call records: pass `call_log=CallLog()` and every call leaves a `CallRecord`
 `call_id` (UUID4), a `ts` (start time, ISO 8601 with offset), the `params` it was sent
 (`max_tokens` plus `call_kwargs`, minus `extra_headers`) and the provider's `response_id` (`response_ids` for a batch).
 `CallLog(capture_text=True)` also records `prompt`, `system_prompt` and `response`; a batch
-stays one record and fills `prompts`, `system_prompts`, `responses` instead (`exchanges()` reads both shapes).
+stays one record and fills `prompts`, `system_prompts`, `responses` instead .
 
-::: xmas.llms.api_llm.ScoringUnsupportedError
+::: xmas.errors.XmasError
 
 ::: xmas.llms.scoring.ScoredSequence
 
@@ -74,10 +74,7 @@ against `MAS(..., tools=[...])` when the system is built. `MCPTools` needs the
         - Tool
         - tool
         - ToolSource
-        - ToolError
-        - ToolAccessError
         - ToolCallRequest
-        - SupportsToolCalls
         - LocalTools
 
 ::: xmas.tools.mcp.MCPTools
@@ -94,7 +91,6 @@ against `MAS(..., tools=[...])` when the system is built. `MCPTools` needs the
     options:
       members:
         - safe_format
-        - extract_placeholders
         - encode_prompts
         - decode_prompts
 
@@ -108,7 +104,7 @@ against `MAS(..., tools=[...])` when the system is built. `MCPTools` needs the
 
 ## Optimization
 
-::: xmas.optimization.base.MASOptimizer
+::: xmas.optimization.optimizer.MASOptimizer
 
 ::: xmas.optimization.attribution.Attributor
 
@@ -116,17 +112,11 @@ against `MAS(..., tools=[...])` when the system is built. `MCPTools` needs the
 
 ::: xmas.optimization.attribution.ContrastiveAttributor
 
-::: xmas.optimization.attribution.UNKNOWN
-
-::: xmas.optimization.updaters.Updater
-
-::: xmas.optimization.updaters.TopologyUpdater
-
 ::: xmas.optimization.updaters.PromptUpdater
 
 ::: xmas.optimization.updaters.AgentPromptView
 
-::: xmas.optimization.reference.PrefixSearchOptimizer
+::: xmas.optimization.prefix_search.PrefixSearchOptimizer
 
 ### CANTANTE
 
@@ -175,8 +165,6 @@ built from it.
 Topology search moves information around; something has to write the sentence
 that uses it.
 
-::: xmas.optimization.synthesis.PromptSynthesizer
-
 ::: xmas.optimization.synthesis.LLMPromptSynthesizer
 
 ::: xmas.optimization.synthesis.MechanicalSynthesizer
@@ -188,7 +176,4 @@ that uses it.
 ::: xmas.spec
     options:
       members:
-        - MASSpec
-        - AgentSpec
         - validate_spec
-        - SPEC_VERSION
