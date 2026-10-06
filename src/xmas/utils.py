@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from datetime import UTC, datetime
+
 import httpx
 
 
-def retry_after_seconds(response: httpx.Response) -> float | None:
-    """Return the ``Retry-After`` header in seconds; only the delta-seconds form is read."""
-    raw = response.headers.get("Retry-After")
+def retry_after_seconds(headers: Mapping[str, str]) -> float | None:
+    """Return a response's ``Retry-After`` header in seconds; only the delta-seconds form is read."""
+    raw = headers.get("Retry-After")
     if raw is None:
         return None
     try:
@@ -26,3 +29,16 @@ def error_message(response: httpx.Response) -> str:
     if isinstance(error, dict) and "message" in error:
         return str(error["message"])
     return str(body)
+
+
+def timestamp() -> str:
+    """Return the current time as ISO 8601 with an explicit UTC offset."""
+    return datetime.now(UTC).isoformat()
+
+
+def approximate_tokens(text: str) -> int:
+    """Count whitespace words, the same undercount promptolution uses.
+
+    Comparable across calls, not to a provider's meter.
+    """
+    return len(text.split())

@@ -231,5 +231,5 @@ def test_a_gateway_model_runs_python_on_the_dev_server(serving_xmas: DevServer) 
     assert trace.error is None, trace.error
     calls = trace["coder"][0].tool_calls
     assert calls, "the model answered without calling run_python"
-    assert any(c.tool == "run_python" and not c.failed for c in calls), [c.to_dict() for c in calls]
+    assert any(c.tool == "run_python" and not c.failed for c in calls), calls
     assert ANSWER in trace.output.replace(",", "")

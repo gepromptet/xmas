@@ -12,20 +12,10 @@ import json
 import statistics
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-GENERATE = "generate"
-"""Operation tag for a decoding call."""
-
-SCORE = "score"
-"""Operation tag for a teacher-forced probe."""
-
-
-def timestamp() -> str:
-    """Return the current time as ISO 8601 with an explicit UTC offset."""
-    return datetime.now(UTC).isoformat()
+from xmas.utils import timestamp
 
 
 @dataclass(frozen=True)
@@ -33,7 +23,7 @@ class CallRecord:
     """One call to a model.
 
     Attributes:
-        operation: :data:`GENERATE` or :data:`SCORE`.
+        operation: ``"generate"`` or ``"score"``.
         model: Model identifier the call named.
         backend: Tag for the serving path, so calls that must never be pooled in one
             statistic can be told apart after the fact.
@@ -181,7 +171,7 @@ class CallLog:
             reported as a distribution rather than a mean, because a probe path's
             tail is what a batch waits on.
         """
-        blocks = {op: aggregate(self, [r for r in self.records if r.operation == op]) for op in (GENERATE, SCORE)}
+        blocks = {op: aggregate(self, [r for r in self.records if r.operation == op]) for op in ("generate", "score")}
         blocks["total"] = aggregate(self, self.records)
         return blocks
 
@@ -232,11 +222,3 @@ def aggregate(log: CallLog, records: list[CallRecord]) -> dict[str, Any]:
         "scored_tokens": sum(record.scored_tokens for record in records),
         "estimated_cost": input_tokens / 1000 * log.input_price_per_1k + output_tokens / 1000 * log.output_price_per_1k,
     }
-
-
-def approximate_tokens(text: str) -> int:
-    """Count whitespace words, the same undercount promptolution uses.
-
-    Comparable across calls, not to a provider's meter.
-    """
-    return len(text.split())

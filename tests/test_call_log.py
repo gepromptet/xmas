@@ -16,7 +16,8 @@ import pytest
 
 from xmas.errors import XmasError
 from xmas.llms.api_llm import APILLM
-from xmas.llms.call_log import GENERATE, SCORE, CallLog, CallRecord, approximate_tokens
+from xmas.llms.call_log import CallLog, CallRecord
+from xmas.utils import approximate_tokens
 
 from .conftest import MockLLM
 
@@ -50,32 +51,32 @@ def test_an_empty_log_still_has_the_shape_a_summary_reader_expects() -> None:
     """A run that never probed must not produce a summary missing the probe block."""
     summary = CallLog().summary()
 
-    assert summary[GENERATE]["calls"] == 0
-    assert summary[SCORE]["calls"] == 0
+    assert summary["generate"]["calls"] == 0
+    assert summary["score"]["calls"] == 0
     assert summary["total"]["latency_s"] == {"mean": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0}
 
 
 def test_the_summary_separates_the_two_operations() -> None:
     log = CallLog()
-    log.record(CallRecord(GENERATE, "m", "gateway", latency_s=1.0, input_tokens=10, output_tokens=5))
-    log.record(CallRecord(SCORE, "m", "gateway", latency_s=0.1, input_tokens=30, scored_tokens=4))
+    log.record(CallRecord("generate", "m", "gateway", latency_s=1.0, input_tokens=10, output_tokens=5))
+    log.record(CallRecord("score", "m", "gateway", latency_s=0.1, input_tokens=30, scored_tokens=4))
 
     summary = log.summary()
 
-    assert summary[GENERATE]["calls"] == 1
-    assert summary[GENERATE]["decoded_output_tokens"] == 5
-    assert summary[SCORE]["calls"] == 1
-    assert summary[SCORE]["scored_tokens"] == 4
-    assert summary[SCORE]["decoded_output_tokens"] == 0, "a probe decodes nothing"
+    assert summary["generate"]["calls"] == 1
+    assert summary["generate"]["decoded_output_tokens"] == 5
+    assert summary["score"]["calls"] == 1
+    assert summary["score"]["scored_tokens"] == 4
+    assert summary["score"]["decoded_output_tokens"] == 0, "a probe decodes nothing"
     assert summary["total"]["calls"] == 2
 
 
 def test_latency_is_reported_as_a_distribution_not_a_mean() -> None:
     log = CallLog()
     for latency in (0.1, 0.2, 0.3, 10.0):
-        log.record(CallRecord(SCORE, "m", "gateway", latency_s=latency))
+        log.record(CallRecord("score", "m", "gateway", latency_s=latency))
 
-    block = log.summary()[SCORE]["latency_s"]
+    block = log.summary()["score"]["latency_s"]
 
     assert block["p50"] == pytest.approx(0.25)
     assert block["max"] == 10.0
@@ -84,27 +85,27 @@ def test_latency_is_reported_as_a_distribution_not_a_mean() -> None:
 
 def test_spend_is_estimated_from_the_configured_price() -> None:
     log = CallLog(input_price_per_1k=0.5, output_price_per_1k=1.5)
-    log.record(CallRecord(GENERATE, "m", "gateway", latency_s=1.0, input_tokens=2000, output_tokens=1000))
+    log.record(CallRecord("generate", "m", "gateway", latency_s=1.0, input_tokens=2000, output_tokens=1000))
 
-    assert log.summary()[GENERATE]["estimated_cost"] == pytest.approx(2.5)
+    assert log.summary()["generate"]["estimated_cost"] == pytest.approx(2.5)
 
 
 def test_a_log_without_prices_reports_zero_rather_than_inventing_a_number() -> None:
     log = CallLog()
-    log.record(CallRecord(GENERATE, "m", "gateway", latency_s=1.0, input_tokens=2000, output_tokens=1000))
+    log.record(CallRecord("generate", "m", "gateway", latency_s=1.0, input_tokens=2000, output_tokens=1000))
 
-    assert log.summary()[GENERATE]["estimated_cost"] == 0.0
+    assert log.summary()["generate"]["estimated_cost"] == 0.0
 
 
 def test_the_log_dumps_one_json_object_per_call(tmp_path: Path) -> None:
     log = CallLog()
-    log.record(CallRecord(GENERATE, "m", "gateway", latency_s=1.0, n_prompts=4))
-    log.record(CallRecord(SCORE, "m", "cluster", latency_s=0.1, scored_tokens=7))
+    log.record(CallRecord("generate", "m", "gateway", latency_s=1.0, n_prompts=4))
+    log.record(CallRecord("score", "m", "cluster", latency_s=0.1, scored_tokens=7))
 
     path = log.to_jsonl(tmp_path / "nested" / "calls.jsonl")
     rows = [json.loads(line) for line in path.read_text().splitlines()]
 
-    assert [row["operation"] for row in rows] == [GENERATE, SCORE]
+    assert [row["operation"] for row in rows] == ["generate", "score"]
     assert rows[0]["n_prompts"] == 4
     assert rows[1]["backend"] == "cluster", "two serving paths must stay separable"
 
@@ -124,7 +125,7 @@ def test_a_probe_records_what_it_billed_and_what_it_measured(monkeypatch: pytest
     build_llm(log).score("The answer is", " forty-two")
 
     (record,) = log.records
-    assert record.operation == SCORE
+    assert record.operation == "score"
     assert record.scored_tokens == 2, "exact: the server returns the tokens it scored"
     assert record.input_tokens == approximate_tokens("The answer is") + approximate_tokens(" forty-two")
     assert record.output_tokens == 0
@@ -143,7 +144,7 @@ def test_a_failed_probe_is_still_a_record(monkeypatch: pytest.MonkeyPatch) -> No
     (record,) = log.records
     assert not record.ok
     assert record.error is not None
-    assert log.summary()[SCORE]["failed"] == 1
+    assert log.summary()["score"]["failed"] == 1
 
 
 def test_generation_records_latency_and_the_prompt_count(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -154,7 +155,7 @@ def test_generation_records_latency_and_the_prompt_count(monkeypatch: pytest.Mon
     llm.get_response(["a b c", "d e"])
 
     (record,) = log.records
-    assert record.operation == GENERATE
+    assert record.operation == "generate"
     assert record.n_prompts == 2
     assert record.input_tokens > 0
     assert record.output_tokens > 0
@@ -317,7 +318,7 @@ def test_every_record_gets_its_own_call_id_and_a_parseable_start_time(monkeypatc
     llm.get_response("a")
     llm.get_response(["b", "c"])
     llm.score("The answer is", " forty-two")
-    log.record(CallRecord(GENERATE, "m", "gateway", latency_s=1.0))
+    log.record(CallRecord("generate", "m", "gateway", latency_s=1.0))
 
     assert len({record.call_id for record in log.records}) == len(log.records) == 4
     for record in log.records:
@@ -328,10 +329,10 @@ def test_every_record_gets_its_own_call_id_and_a_parseable_start_time(monkeypatc
 def test_to_jsonl_appends_when_asked_and_replaces_otherwise(tmp_path: Path) -> None:
     path = tmp_path / "calls.jsonl"
     first = CallLog()
-    first.record(CallRecord(GENERATE, "m", "gateway", latency_s=1.0, params={"max_tokens": 8}))
-    first.record(CallRecord(SCORE, "m", "gateway", latency_s=0.1))
+    first.record(CallRecord("generate", "m", "gateway", latency_s=1.0, params={"max_tokens": 8}))
+    first.record(CallRecord("score", "m", "gateway", latency_s=0.1))
     second = CallLog()
-    second.record(CallRecord(GENERATE, "m", "gateway", latency_s=2.0))
+    second.record(CallRecord("generate", "m", "gateway", latency_s=2.0))
 
     first.to_jsonl(path)
     second.to_jsonl(path, append=True)

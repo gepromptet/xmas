@@ -39,15 +39,6 @@ class ToolCall:
     result: str
     failed: bool = False
 
-    def to_dict(self) -> dict[str, Any]:
-        """Return the plain-data form."""
-        return {
-            "tool": self.tool,
-            "arguments": dict(self.arguments),
-            "result": self.result,
-            "failed": self.failed,
-        }
-
 
 @dataclass(frozen=True)
 class AgentRecord:

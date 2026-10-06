@@ -17,21 +17,20 @@ from openai.types.chat import ChatCompletion
 from pydantic import Field
 
 from xmas import END, MAS, START, Agent, ToolCall
-from xmas.llms.api_llm import APILLM, RateLimitedError
-from xmas.llms.call_log import CallLog, timestamp
+from xmas.errors import XmasError
+from xmas.llms.api_llm import APILLM
+from xmas.llms.call_log import CallLog
 from xmas.optimization.graph_updater import GraphUpdater
 from xmas.optimization.synthesis import MechanicalSynthesizer
 from xmas.optimization.topology import TopologyBudget
 from xmas.tools import (
     LocalTools,
-    SupportsToolCalls,
     Tool,
-    ToolAccessError,
     ToolCallRequest,
-    ToolError,
     ToolSource,
     tool,
 )
+from xmas.utils import timestamp
 
 from .conftest import MockLLM
 
@@ -56,7 +55,7 @@ class ToolMockLLM(MockLLM):
         return self.turns.pop(0) if self.turns else self.default
 
 
-class FakeToolSource:
+class FakeToolSource(ToolSource):
     """A ToolSource with scripted answers; records every call."""
 
     def __init__(self, names: Sequence[str] = ("run_python",), answers: dict[str, Any] | None = None) -> None:
@@ -133,7 +132,7 @@ def test_tool_keeps_annotated_constraints_and_takes_a_name() -> None:
     assert clip_value.parameters["properties"]["json"] == {"type": "integer", "minimum": 0}
     assert clip_value.parameters["required"] == ["json"]
     assert clip_value.validate({"json": "3"}) == {"json": 3, "schema": "x"}  # names that shadow BaseModel work
-    with pytest.raises(ToolError, match="json"):
+    with pytest.raises(XmasError, match="json"):
         clip_value.validate({"json": -1})
 
 
@@ -202,16 +201,16 @@ def test_to_openai_shape() -> None:
 
 def test_validate_coerces_and_reports() -> None:
     assert add.validate({"a": "4"}) == {"a": 4, "b": 2}
-    with pytest.raises(ToolError, match="invalid arguments for add"):
+    with pytest.raises(XmasError, match="invalid arguments for add"):
         add.validate({"a": "four"})
-    with pytest.raises(ToolError, match="c: Extra inputs"):
+    with pytest.raises(XmasError, match="c: Extra inputs"):
         add.validate({"a": 1, "c": 3})
     remote = Tool(
         "r", "r", {"type": "object", "properties": {"x": {}}, "required": ["x"], "additionalProperties": False}
     )
-    with pytest.raises(ToolError, match="missing"):
+    with pytest.raises(XmasError, match="missing"):
         remote.validate({})
-    with pytest.raises(ToolError, match="unexpected"):
+    with pytest.raises(XmasError, match="unexpected"):
         remote.validate({"x": 1, "y": 2})
     assert remote.validate({"x": 1}) == {"x": 1}
 
@@ -234,11 +233,11 @@ def test_local_tools_stringify_results_and_wrap_exceptions() -> None:
     assert isinstance(source, ToolSource)
     assert source.call("add", {"a": 1}) == "3"
     assert source.call("listing", {"n": 3}) == "[0, 1, 2]"
-    with pytest.raises(ToolError, match="KeyError"):
+    with pytest.raises(XmasError, match="KeyError"):
         source.call("boom", {})
-    with pytest.raises(ToolError, match="invalid arguments"):
+    with pytest.raises(XmasError, match="invalid arguments"):
         source.call("add", {})
-    with pytest.raises(ToolError, match="unknown tool"):
+    with pytest.raises(XmasError, match="unknown tool"):
         source.call("nope", {})
 
 
@@ -421,7 +420,7 @@ def test_default_is_five_rounds() -> None:
 
 
 def test_failed_calls_are_fed_back_and_the_run_goes_on() -> None:
-    source = FakeToolSource(answers={"run_python": ToolError("exit_code=1 killed=none\nTraceback")})
+    source = FakeToolSource(answers={"run_python": XmasError("exit_code=1 killed=none\nTraceback")})
     llm = ToolMockLLM(
         [
             ("", [req("run_python", "{not json", "1"), req("run_python", "[1]", "2")]),
@@ -435,7 +434,7 @@ def test_failed_calls_are_fed_back_and_the_run_goes_on() -> None:
     assert trace.output == "gave up"
     calls = trace["coder"][0].tool_calls
     assert all(call.failed for call in calls)
-    assert calls[0].arguments == {"_raw": "{not json"}
+    assert calls[0].arguments == {"raw": "{not json"}
     assert calls[0].result.startswith("invalid JSON arguments")
     assert calls[1].result == "invalid JSON arguments: not an object"
     assert calls[2].result == "unknown tool; available: run_python"
@@ -447,8 +446,8 @@ def test_failed_calls_are_fed_back_and_the_run_goes_on() -> None:
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
-        (ToolAccessError("tool_not_in_scope: nope"), "ToolAccessError: tool_not_in_scope: nope"),
-        (RateLimitedError("too_many_concurrent: 4 in flight", retry_after=1.0), "RateLimitedError: too_many"),
+        (XmasError("mcp: tool_not_in_scope (403): nope", status=403), "XmasError: mcp: tool_not_in_scope (403)"),
+        (XmasError("mcp: too_many_concurrent (429): 4 in flight", 429, 1.0), "XmasError: mcp: too_many"),
     ],
 )
 def test_refusals_end_the_run(error: Exception, expected: str) -> None:
@@ -548,7 +547,7 @@ def api_llm(monkeypatch: pytest.MonkeyPatch, answers: list[Any]) -> tuple[APILLM
 def test_api_llm_offers_tools_and_parses_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     call = {"id": "c1", "type": "function", "function": {"name": "add", "arguments": '{"a": 1}'}}
     llm, sent, log = api_llm(monkeypatch, [completion(None, [call])])
-    assert isinstance(llm, SupportsToolCalls)
+    assert hasattr(llm, "get_tool_response")
 
     messages = [{"role": "user", "content": "hi"}]
     text, requests = llm.get_tool_response(messages, [add])
