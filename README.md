@@ -6,8 +6,6 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-## 🚀 What is xmas?
-
 🎁 **xmas builds, runs and optimizes multi-agent systems.** A system is a set of agents,
 the edges that wire them together and the model behind each agent. xmas treats all of it
 as one object whose parts are ordinary parameters, so an optimizer can improve every
@@ -131,23 +129,6 @@ credential is ever read from or written to the repository.
 |---|---|
 | `XMAS_BASE_URL` | Base URL of an OpenAI-compatible endpoint |
 | `XMAS_API_KEY` | API key for that endpoint |
-
-Copy the template and fill it in locally:
-
-```bash
-cp .env.example .env
-```
-
-`.env` is gitignored, `.env.example` holds dummy values only, and a
-[gitleaks](https://github.com/gitleaks/gitleaks) pre-commit hook scans every commit for
-credentials. If you need a key in CI, add it as a repository secret and expose it as an
-environment variable in the workflow. Never inline it.
-
-Tests that need a live model run against the gateway at
-[`api.tomzehle.com`](https://api.tomzehle.com), which speaks the OpenAI protocol. Point
-`XMAS_BASE_URL` at it and set `XMAS_API_KEY` to your gateway key. Tests that require a
-gateway are skipped when the variables are absent, so a fresh clone is green without any
-credential.
 
 ## Development
 
