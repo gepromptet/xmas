@@ -8,7 +8,7 @@ requires-python = ">=3.12,<3.13"
 dynamic = ["version"]
 keywords = ["multi-agent-systems", "llm", "agents", "prompt-optimization"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 4 - Beta",
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3.12",

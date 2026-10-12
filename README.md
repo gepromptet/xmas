@@ -1,4 +1,4 @@
-# 🎄 xmas: multi-agent systems, wrapped and ready 🎁
+# 🎄 xmas
 
 [![CI](https://github.com/gepromptet/xmas/actions/workflows/ci.yml/badge.svg)](https://github.com/gepromptet/xmas/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/)
@@ -6,30 +6,25 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-## 🎅 What is xmas?
+## 🚀 What is xmas?
 
-**xmas builds, runs and optimizes multi-agent systems.** Think of Santa's workshop 🎄: one
-elf reads the wish list, another builds the toy, a third wraps it 🎁, and Santa checks the
-list twice before anything goes down the chimney 🦌. That team is a multi-agent system,
-and xmas treats the whole workshop as one object: every agent's prompt, the edges that
-wire the agents together and the model behind each agent are ordinary parameters that an
-optimizer can improve against a task you care about. Every run leaves a full per-agent
-trace, so you can see which elf dropped the present. ❄️
+🎁 **xmas builds, runs and optimizes multi-agent systems.** A system is a set of agents,
+the edges that wire them together and the model behind each agent. xmas treats all of it
+as one object whose parts are ordinary parameters, so an optimizer can improve every
+agent's prompt, the wiring and the choice of model against a task you care about. Every
+run leaves a full per-agent trace, so you always know who was naughty and who was nice.
 
 ### Key Features
 
-- Build a system from plain `Agent` objects and edges; cycles are allowed and bounded.
-- Optimize prompts with CANTANTE, which splits one system score into credit per agent.
-- Search the topology itself: add, remove and rewire agents under a budget.
-- Bind a different model to each agent, and record tokens and cost per call.
-- Save and load a system as YAML; derive candidates with `copy` without touching the original.
-- Give agents tools, as Python functions or from an MCP server.
+- **Your first system in minutes:** a few `Agent` objects and their edges, and it runs.
+- **Save and share as YAML:** a whole system (prompts, wiring, models) in one file anyone can load.
+- **Optimization built in:** improve every agent's prompt, the wiring and the models against your task.
 
 See [docs/design-principles.md](docs/design-principles.md) for the principles behind the
 design.
 
-> **Status: pre-alpha.** Inference, the optimization loop, CANTANTE and topology search are
-> in place; the experiment layer is not.
+> **Status: beta.** Inference, the optimization loop, CANTANTE and topology search are in
+> place; the experiment layer is still to come.
 
 ## 🔧 Installation
 
@@ -50,32 +45,32 @@ cp .env.example .env   # then set XMAS_BASE_URL and XMAS_API_KEY
 
 Tools served over MCP need `uv sync --extra mcp`.
 
-## 🚀 Quickstart: Santa's workshop
+## 💡 Quickstart
 
-Two agents: an elf proposes a gift, and Santa makes the final call. `{query}` and
-`{gift}` name what each agent reads; the elf's `output` is what Santa receives.
+Two agents: an intern drafts an answer, and the boss turns it into the final one.
+`{query}` and `{draft}` name what each agent reads; the intern's `output` is what the boss
+receives.
 
 ```python
 from xmas import MAS, APILLM, Agent
 
 llm = APILLM(model="llama-3.1-8b")  # endpoint and key come from XMAS_BASE_URL / XMAS_API_KEY
 
-elf = Agent("elf", prompt="You are a workshop elf. Suggest one gift for this wish list: {query}", output="gift")
-santa = Agent(
-    "santa",
-    prompt="You are Santa. Wish list: {query}\nYour elf suggests: {gift}\n"
-    "Give the final gift in one line. No ponies, the sleigh is full.",
-    inputs=["query", "gift"],
+intern = Agent("intern", prompt="Answer this question, showing your working: {query}", output="draft")
+boss = Agent(
+    "boss",
+    prompt="Question: {query}\nYour intern's draft: {draft}\nGive the final answer in one sentence, as your own.",
+    inputs=["query", "draft"],
     output="prediction",
 )
 
-workshop = MAS([elf, santa], edges=[("elf", "santa")], llm=llm)
+mas = MAS([intern, boss], edges=[("intern", "boss")], llm=llm)
 
-print(workshop("A pony, a rocket and a PhD"))  # Santa's answer
-print(workshop.last_trace["elf"][0].outputs)  # what the elf proposed, from the trace
+print(mas("Why is the sky blue?"))  # the boss's answer
+print(mas.last_trace["intern"][0].outputs)  # who really did the work
 
-workshop.to_yaml("workshop.yaml")  # save it, then MAS.from_yaml("workshop.yaml", llm=llm)
-nicer = workshop.copy(prompts={"santa": workshop.agents["santa"].prompt + " Be jolly."})
+mas.to_yaml("team.yaml")  # save it, then MAS.from_yaml("team.yaml", llm=llm)
+fairer = mas.copy(prompts={"boss": mas.agents["boss"].prompt + " Credit the intern."})
 ```
 
 Each agent can run on its own model: give it `model="..."` and pass the models by name

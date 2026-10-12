@@ -14,34 +14,33 @@ from .conftest import MockLLM
 
 
 def test_the_quickstart_runs_as_written(tmp_path: Path) -> None:
-    llm = MockLLM(lambda prompt: "A rocket." if "You are Santa" in prompt else "A rocket and a pony.")
+    llm = MockLLM(lambda prompt: "Rayleigh scattering." if "as your own" in prompt else "Short waves scatter more.")
 
-    elf = Agent("elf", prompt="You are a workshop elf. Suggest one gift for this wish list: {query}", output="gift")
-    santa = Agent(
-        "santa",
-        prompt="You are Santa. Wish list: {query}\nYour elf suggests: {gift}\n"
-        "Give the final gift in one line. No ponies, the sleigh is full.",
-        inputs=["query", "gift"],
+    intern = Agent("intern", prompt="Answer this question, showing your working: {query}", output="draft")
+    boss = Agent(
+        "boss",
+        prompt="Question: {query}\nYour intern's draft: {draft}\nGive the final answer in one sentence, as your own.",
+        inputs=["query", "draft"],
         output="prediction",
     )
 
-    workshop = MAS([elf, santa], edges=[("elf", "santa")], llm=llm)
+    mas = MAS([intern, boss], edges=[("intern", "boss")], llm=llm)
 
-    assert workshop("A pony, a rocket and a PhD") == "A rocket."
-    trace = workshop.last_trace
+    assert mas("Why is the sky blue?") == "Rayleigh scattering."
+    trace = mas.last_trace
     assert trace is not None
-    assert trace.agents == ("elf", "santa")
-    assert trace["elf"][0].outputs == {"gift": "A rocket and a pony."}
-    assert "Your elf suggests: A rocket and a pony." in llm.calls[-1]
+    assert trace.agents == ("intern", "boss")
+    assert trace["intern"][0].outputs == {"draft": "Short waves scatter more."}
+    assert "Your intern's draft: Short waves scatter more." in llm.calls[-1]
 
-    path = tmp_path / "workshop.yaml"
-    workshop.to_yaml(path)
+    path = tmp_path / "team.yaml"
+    mas.to_yaml(path)
     again = MAS.from_yaml(path, llm=llm)
-    assert again.to_dict() == workshop.to_dict()
+    assert again.to_dict() == mas.to_dict()
 
-    nicer = workshop.copy(prompts={"santa": workshop.agents["santa"].prompt + " Be jolly."})
-    assert nicer.agents["santa"].prompt.endswith(" Be jolly.")
-    assert not workshop.agents["santa"].prompt.endswith(" Be jolly.")
+    fairer = mas.copy(prompts={"boss": mas.agents["boss"].prompt + " Credit the intern."})
+    assert fairer.agents["boss"].prompt.endswith(" Credit the intern.")
+    assert not mas.agents["boss"].prompt.endswith(" Credit the intern.")
 
 
 def test_agents_are_addressable_and_mutable_through_the_mas() -> None:

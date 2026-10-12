@@ -7,10 +7,10 @@ the multi-agent system itself is the Predictor, and its per-agent prompts, its t
 and its per-node model bindings are all optimizable components. A single-agent system is
 the exact degenerate case, so promptolution's optimizers plug in unchanged.
 
-!!! warning "Pre-alpha"
+!!! note "Beta"
 
-    The packaging shell is in place; the framework core is under construction. These
-    docs will fill in as the API lands.
+    Inference, the optimization loop, CANTANTE and topology search are in place; the
+    experiment layer is still to come.
 
 ## Where to start
 
