@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-DEFAULT_INPUT = "query"
-"""Variable an agent reads when ``inputs`` is not given."""
-
 
 class Agent:
     """A single LLM node: a prompt, the state it reads, and the state it writes.
@@ -61,7 +58,7 @@ class Agent:
             raise ValueError("An agent needs a name.")
         if not output:
             raise ValueError(f"Agent {name!r} needs an output variable.")
-        resolved_inputs = list(inputs) if inputs is not None else [DEFAULT_INPUT]
+        resolved_inputs = list(inputs) if inputs is not None else ["query"]
         if not resolved_inputs:
             raise ValueError(f"Agent {name!r} needs at least one input variable.")
 
@@ -99,7 +96,8 @@ class Agent:
             The reconstructed agent.
 
         Raises:
-            ValueError: If a required key is missing or an unknown key is present.
+            ValueError: If a required key is missing, an unknown key is present,
+                or a value has the wrong type.
         """
         unknown = set(data) - {"name", "prompt", "inputs", "output", "tools", "model"}
         if unknown:
@@ -107,6 +105,16 @@ class Agent:
         missing = {"name", "prompt", "output"} - set(data)
         if missing:
             raise ValueError(f"Agent is missing required keys: {sorted(missing)}.")
+        for key in ("name", "prompt", "output"):
+            if not isinstance(data[key], str):
+                raise ValueError(f"Agent {data['name']!r} needs a string {key!r}.")
+        for key in ("inputs", "tools"):
+            value = data.get(key, [])
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise ValueError(f"Agent {data['name']!r} needs {key!r} to be a list of strings.")
+        model = data.get("model")
+        if model is not None and not isinstance(model, str):
+            raise ValueError(f"Agent {data['name']!r} needs 'model' to be a string or null.")
         return cls(
             name=data["name"],
             prompt=data["prompt"],

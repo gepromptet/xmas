@@ -52,11 +52,32 @@ teacher-forced sibling of generation.
 
 ::: xmas.llms.api_llm.APILLM
 
-::: xmas.llms.api_llm.ScoringUnsupportedError
+Per-call records: pass `call_log=CallLog()` and every call leaves a `CallRecord` with a
+`call_id` (UUID4), a `ts` (start time, ISO 8601 with offset), the `params` it was sent
+(`max_tokens` plus `call_kwargs`, minus `extra_headers`) and the provider's `response_id` (`response_ids` for a batch).
+`CallLog(capture_text=True)` also records `prompt`, `system_prompt` and `response`; a batch
+stays one record and fills `prompts`, `system_prompts`, `responses` instead .
+
+::: xmas.errors.XmasError
 
 ::: xmas.llms.scoring.ScoredSequence
 
-::: xmas.llms.scoring.SupportsScore
+## Tools
+
+Functions an agent may call while it answers: `Agent.tools` names resolve
+against `MAS(..., tools=[...])` when the system is built. `MCPTools` needs the
+`mcp` extra.
+
+::: xmas.tools
+    options:
+      members:
+        - Tool
+        - tool
+        - ToolSource
+        - ToolCallRequest
+        - LocalTools
+
+::: xmas.tools.mcp.MCPTools
 
 ::: xmas.llms.masking
     options:
@@ -70,7 +91,6 @@ teacher-forced sibling of generation.
     options:
       members:
         - safe_format
-        - extract_placeholders
         - encode_prompts
         - decode_prompts
 
@@ -84,7 +104,7 @@ teacher-forced sibling of generation.
 
 ## Optimization
 
-::: xmas.optimization.base.MASOptimizer
+::: xmas.optimization.optimizer.MASOptimizer
 
 ::: xmas.optimization.attribution.Attributor
 
@@ -92,17 +112,11 @@ teacher-forced sibling of generation.
 
 ::: xmas.optimization.attribution.ContrastiveAttributor
 
-::: xmas.optimization.attribution.UNKNOWN
-
-::: xmas.optimization.updaters.Updater
-
-::: xmas.optimization.updaters.TopologyUpdater
-
 ::: xmas.optimization.updaters.PromptUpdater
 
 ::: xmas.optimization.updaters.AgentPromptView
 
-::: xmas.optimization.reference.PrefixSearchOptimizer
+::: xmas.optimization.prefix_search.PrefixSearchOptimizer
 
 ### CANTANTE
 
@@ -151,8 +165,6 @@ built from it.
 Topology search moves information around; something has to write the sentence
 that uses it.
 
-::: xmas.optimization.synthesis.PromptSynthesizer
-
 ::: xmas.optimization.synthesis.LLMPromptSynthesizer
 
 ::: xmas.optimization.synthesis.MechanicalSynthesizer
@@ -164,7 +176,4 @@ that uses it.
 ::: xmas.spec
     options:
       members:
-        - MASSpec
-        - AgentSpec
         - validate_spec
-        - SPEC_VERSION

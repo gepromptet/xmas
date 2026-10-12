@@ -5,22 +5,19 @@ from __future__ import annotations
 
 import math
 from concurrent.futures import ThreadPoolExecutor
-from itertools import cycle
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from promptolution.optimizers.base_optimizer import BaseOptimizer
 from promptolution.utils.prompt import Prompt
 
 from xmas.mas import MAS
-from xmas.optimization.attribution import UNKNOWN, Attributor
-from xmas.optimization.base import MASOptimizer
+from xmas.optimization.attribution import Attributor
 from xmas.optimization.broker import Board, ProxyTask, Request, rounds
+from xmas.optimization.optimizer import MASOptimizer, traces_by_position
 from xmas.optimization.updaters import AgentPromptView
 from xmas.prompts import encode_prompts
-
-if TYPE_CHECKING:  # pragma: no cover
-    from xmas.tasks.base import MASTask
-    from xmas.trace import Trace
+from xmas.tasks.base import MASTask
+from xmas.trace import Trace
 
 
 class CantanteOptimizer(MASOptimizer):
@@ -49,6 +46,8 @@ class CantanteOptimizer(MASOptimizer):
             whole run. Above zero means the meta-model's answers were partly
             unreadable, and the run fell back to the measured system score there.
     """
+
+    attributor: Attributor
 
     def __init__(
         self,
@@ -81,12 +80,10 @@ class CantanteOptimizer(MASOptimizer):
         super().__init__(mas=mas, task=task, attributor=attributor)
         self.optimizer_cls = optimizer_cls
         self.inner_steps = inner_steps
-        self.initial_prompts = dict(initial_prompts or {})
-        self.optimizer_kwargs = dict(optimizer_kwargs or {})
+        self.initial_prompts = initial_prompts or {}
+        self.optimizer_kwargs = optimizer_kwargs or {}
         self.rounds_served = 0
         self.unattributed = 0
-
-    # ------------------------------------------------------------- the round
 
     def propose(self) -> list[MAS]:
         """Run one round of every agent's optimizer and return what they settled on.
@@ -100,11 +97,9 @@ class CantanteOptimizer(MASOptimizer):
         board = Board()
         optimizers: dict[str, BaseOptimizer] = {}
         for name, agent in self.mas.agents.items():
-            proxy = ProxyTask(name, self.task, board)
-            board.register(proxy)
             optimizers[name] = self.optimizer_cls(
                 predictor=AgentPromptView(self.mas, name),
-                task=proxy,
+                task=ProxyTask(name, self.task, board),
                 initial_prompts=self.initial_prompts.get(name) or [agent.prompt],
                 **self.optimizer_kwargs,
             )
@@ -113,7 +108,7 @@ class CantanteOptimizer(MASOptimizer):
             workers = [executor.submit(optimizer.optimize, self.inner_steps) for optimizer in optimizers.values()]
             try:
                 for batch in rounds(board, workers):
-                    self._serve(batch)
+                    self.serve(batch)
             finally:
                 board.cancel_all()
 
@@ -132,27 +127,20 @@ class CantanteOptimizer(MASOptimizer):
         Returns:
             The chosen system.
         """
-        best = max(range(len(candidates)), key=lambda index: scores[index])
-        return candidates[best] if scores[best] > scores[0] else candidates[0]
+        return candidates[scores.index(max(scores))]
 
-    # ------------------------------------------------------------ the broker
-
-    def _serve(self, batch: dict[str, Request]) -> None:
+    def serve(self, batch: dict[str, Request]) -> None:
         """Answer one round of pending requests with attributed credit."""
-        sets = self._joint_sets(batch)
-        rewards, traces = self._measure(sets)
-        credit = self._attribute(sets, rewards, traces)
+        sets = self.joint_sets(batch)
+        rewards, traces = self.measure(sets)
+        credit = self.split_credit(sets, rewards, traces)
 
         for agent, request in batch.items():
-            rows = credit.get(agent)
-            if rows is None:
-                request.error = RuntimeError(f"The attributor returned no credit for {agent!r}.")
-            else:
-                request.scores = rows[: len(request.prompts)]
+            request.scores = credit[agent][: len(request.prompts)]
             request.done.set()
         self.rounds_served += 1
 
-    def _joint_sets(self, batch: dict[str, Request]) -> list[dict[str, str]]:
+    def joint_sets(self, batch: dict[str, Request]) -> list[dict[str, str]]:
         """Combine each agent's candidates into whole prompt sets to evaluate.
 
         The pairing is positional and wraps: agent A's prompt ``k`` meets agent
@@ -173,10 +161,12 @@ class CantanteOptimizer(MASOptimizer):
             return [current]
 
         width = max(len(prompts) for prompts in varying.values())
-        cycles = {agent: cycle(prompts) for agent, prompts in varying.items()}
-        return [{**current, **{agent: next(values) for agent, values in cycles.items()}} for _ in range(width)]
+        return [
+            {**current, **{agent: prompts[k % len(prompts)] for agent, prompts in varying.items()}}
+            for k in range(width)
+        ]
 
-    def _measure(self, sets: list[dict[str, str]]) -> tuple[list[list[float]], dict[tuple[int, int], Trace]]:
+    def measure(self, sets: list[dict[str, str]]) -> tuple[list[list[float]], dict[tuple[int, int], Trace]]:
         """Evaluate whole prompt sets on the real task and recover their traces.
 
         Traces come back only for the rollouts the task actually ran; a pair it
@@ -195,22 +185,22 @@ class CantanteOptimizer(MASOptimizer):
         cached = set(self.task.eval_cache)
         result = self.task.evaluate([Prompt(text) for text in encoded], predictor=self.mas, eval_strategy="full")
 
-        positions = [
-            (index, column)
-            for index, text in enumerate(encoded)
-            for column, (x, y) in enumerate(zip(self.task.xs, self.task.ys, strict=True))
-            if (text, x, str(y)) not in cached
-        ]
-        traces = dict(zip(positions, self.mas.last_traces, strict=False))
+        traces = traces_by_position(self.task, self.mas, encoded, cached)
         return [[float(value) for value in row] for row in result.scores.tolist()], traces
 
-    def _attribute(
+    def split_credit(
         self,
         sets: list[dict[str, str]],
         rewards: list[list[float]],
         traces: dict[tuple[int, int], Trace],
     ) -> dict[str, list[list[float]]]:
         """Split the measured scores into per-agent credit, shaped for the proxies.
+
+        A cell the judge could not read falls back to the system's own score for
+        that rollout, because the inner optimizer needs a number to rank on: the
+        verdict a uniform attributor would have given. That is a measurement
+        rather than an invention, and :attr:`unattributed` counts it so a run
+        that leaned on it is visible.
 
         Args:
             sets: The evaluated prompt sets.
@@ -222,10 +212,10 @@ class CantanteOptimizer(MASOptimizer):
         """
         width = len(rewards[0]) if rewards else 0
         names = sorted(self.mas.agents)
-        grid = {name: [[UNKNOWN] * width for _ in sets] for name in names}
+        grid = {name: [[math.nan] * width for _ in sets] for name in names}
 
         positions = sorted(traces)
-        if positions and self.attributor is not None:
+        if positions:
             flat = self.attributor.attribute(
                 [traces[position] for position in positions],
                 [rewards[index][column] for index, column in positions],
@@ -237,18 +227,6 @@ class CantanteOptimizer(MASOptimizer):
                 for (index, column), value in zip(positions, values, strict=True):
                     grid[name][index][column] = value
 
-        self._record(grid, rewards)
-        return grid
-
-    def _record(self, grid: dict[str, list[list[float]]], rewards: list[list[float]]) -> None:
-        """Fill unattributed cells with the measured score and note how many there were.
-
-        An unattributed cell is one the judge could not read. Leaving it absent is
-        not an option here, because the inner optimizer needs a number to rank on,
-        so it falls back to the system's own score for that rollout: the verdict a
-        uniform attributor would have given. That is a measurement rather than an
-        invention, and the count is kept so a run that leaned on it is visible.
-        """
         for name, rows in grid.items():
             for index, row in enumerate(rows):
                 for column, value in enumerate(row):
@@ -256,3 +234,4 @@ class CantanteOptimizer(MASOptimizer):
                         self.unattributed += 1
                         row[column] = rewards[index][column]
             self.credit[name] = [sum(row) / len(row) for row in rows if row]
+        return grid

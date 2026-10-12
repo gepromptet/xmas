@@ -1,121 +1,15 @@
-"""Updaters: per-component-type proposal machinery."""
+"""Prompt updaters: a promptolution optimizer applied to one agent of a MAS."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import Any
 
 from promptolution.optimizers.base_optimizer import BaseOptimizer
 from promptolution.predictors.base_predictor import BasePredictor
 
 from xmas.mas import MAS
 from xmas.prompts import encode_prompts
-
-if TYPE_CHECKING:  # pragma: no cover
-    from xmas.tasks.base import MASTask
-
-
-@runtime_checkable
-class Updater(Protocol):
-    """Proposes new values for one kind of component.
-
-    One updater exists per component type: prompts, topology, model bindings.
-    Each sees the current MAS and the credit its component earned, and returns
-    candidate replacements. Adding a research method means adding an updater, not
-    a framework.
-    """
-
-    def propose(self, mas: MAS, credit: dict[str, list[float]], n: int) -> list[MAS]:
-        """Propose candidate systems differing from ``mas`` in this component.
-
-        Args:
-            mas: The current system.
-            credit: Per-component credit from an
-                :class:`~xmas.optimization.attribution.Attributor`.
-            n: How many candidates to return.
-
-        Returns:
-            Up to ``n`` candidates, derived via :meth:`xmas.MAS.copy`.
-        """
-        ...
-
-
-@runtime_checkable
-class TopologyUpdater(Protocol):
-    """Proposes new topologies. Implementations are a later package.
-
-    Declared now so that the seam exists and an optimizer can be written against
-    the general shape rather than against prompts specifically.
-    """
-
-    def propose(self, mas: MAS, credit: dict[str, list[float]], n: int) -> list[MAS]:
-        """Propose candidate systems differing in topology.
-
-        Args:
-            mas: The current system.
-            credit: Per-component credit.
-            n: How many candidates to return.
-
-        Returns:
-            Up to ``n`` candidates.
-        """
-        ...
-
-
-class AgentPromptView(BasePredictor):
-    """One agent of a MAS, presented as a single-prompt predictor.
-
-    This is the adapter that makes P4's claim literal: a promptolution optimizer
-    improves *a* prompt for *a* predictor, and this view is that predictor. It
-    accepts one agent's prompt, holds every other agent fixed, and runs the whole
-    system. The optimizer never learns it is inside a multi-agent graph.
-
-    Attributes:
-        mas: The system the agent belongs to.
-        agent: Name of the agent whose prompt varies.
-    """
-
-    def __init__(self, mas: MAS, agent: str) -> None:
-        """Initialize the view.
-
-        Args:
-            mas: The system to run.
-            agent: Name of the agent whose prompt this view exposes.
-
-        Raises:
-            KeyError: If the MAS has no such agent.
-        """
-        if agent not in mas.agents:
-            raise KeyError(f"MAS has no agent {agent!r}; it has {sorted(mas.agents)}.")
-        self.mas = mas
-        self.agent = agent
-        super().__init__(llm=mas.llm)
-
-    def predict(
-        self,
-        prompts: str | list[str],
-        xs: list[str],
-        system_prompts: str | list[str] | None = None,
-    ) -> tuple[list[str], list[str]]:
-        """Run the system with each prompt substituted into this view's agent.
-
-        Args:
-            prompts: Candidate prompts for this agent, one per input.
-            xs: The inputs.
-            system_prompts: Passed through to the underlying system.
-
-        Returns:
-            A ``(predictions, sequences)`` pair, matching ``BasePredictor``.
-        """
-        if not xs:
-            return [], []
-        candidates = [prompts] * len(xs) if isinstance(prompts, str) else list(prompts)
-        base = self.mas.prompts()
-        encoded = [encode_prompts({**base, self.agent: prompt}) for prompt in candidates]
-        return self.mas.predict(encoded, xs, system_prompts=system_prompts)
-
-    def _extract_preds(self, preds: list[str]) -> list[str]:
-        """Return predictions unchanged; the terminal agent already extracts."""
-        return list(preds)
+from xmas.tasks.base import MASTask
 
 
 class PromptUpdater:
@@ -192,4 +86,60 @@ class PromptUpdater:
             **self.optimizer_kwargs,
         )
         prompts = optimizer.optimize(n_steps=self.steps)
-        return [mas.copy(prompts={agent: str(prompt)}) for prompt in prompts[:n]]
+        return [mas.copy(prompts={agent: prompt.construct_prompt()}) for prompt in prompts[:n]]
+
+
+class AgentPromptView(BasePredictor):
+    """One agent of a MAS, presented as a single-prompt predictor.
+
+    A promptolution optimizer improves a prompt for a predictor, and this view is
+    that predictor. It
+    accepts one agent's prompt, holds every other agent fixed, and runs the whole
+    system. The optimizer never learns it is inside a multi-agent graph.
+
+    Attributes:
+        mas: The system the agent belongs to.
+        agent: Name of the agent whose prompt varies.
+    """
+
+    def __init__(self, mas: MAS, agent: str) -> None:
+        """Initialize the view.
+
+        Args:
+            mas: The system to run.
+            agent: Name of the agent whose prompt this view exposes.
+
+        Raises:
+            KeyError: If the MAS has no such agent.
+        """
+        if agent not in mas.agents:
+            raise KeyError(f"MAS has no agent {agent!r}; it has {sorted(mas.agents)}.")
+        self.mas = mas
+        self.agent = agent
+        super().__init__(llm=mas.llm)
+
+    def predict(
+        self,
+        prompts: str | list[str],
+        xs: list[str],
+        system_prompts: str | list[str] | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """Run the system with each prompt substituted into this view's agent.
+
+        Args:
+            prompts: Candidate prompts for this agent, one per input.
+            xs: The inputs.
+            system_prompts: Passed through to the underlying system.
+
+        Returns:
+            A ``(predictions, sequences)`` pair, matching ``BasePredictor``.
+        """
+        candidates = [prompts] * len(xs) if isinstance(prompts, str) else list(prompts)
+        base = self.mas.prompts()
+        encoded = [encode_prompts({**base, self.agent: prompt}) for prompt in candidates]
+        return self.mas.predict(encoded, xs, system_prompts=system_prompts)
+
+    # promptolution's BasePredictor calls _extract_preds on every prediction batch.
+    def _extract_preds(self, preds: list[str]) -> list[str]:
+        """Return predictions unchanged; the terminal agent already extracts."""
+        return list(preds)

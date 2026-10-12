@@ -10,9 +10,16 @@ from __future__ import annotations
 
 from xmas.mas import MAS
 from xmas.optimization.attribution import Attributor
-from xmas.optimization.base import MASOptimizer
+from xmas.optimization.optimizer import MASOptimizer
 from xmas.tasks.base import MASTask
 
+# Fixed phrases tried against an agent's prompt. Not a method, a fixture.
+#
+# Fifteen of them, so a population of sixteen is available without repeating one.
+# Which matters more than it looks: a probing task's estimator is
+# population-relative, and its importance weights are bounded by the population
+# size, so the width of the candidate set is a property of the measurement and not
+# just of the search.
 PREFIXES: tuple[str, ...] = (
     "Think step by step.",
     "Be concise and exact.",
@@ -30,14 +37,6 @@ PREFIXES: tuple[str, ...] = (
     "Answer only after verifying each step.",
     "Lay out the working, then the final number.",
 )
-"""Fixed phrases tried against an agent's prompt. Not a method, a fixture.
-
-Fifteen of them, so a population of sixteen is available without repeating one.
-Which matters more than it looks: a probing task's estimator is
-population-relative, and its importance weights are bounded by the population
-size, so the width of the candidate set is a property of the measurement and not
-just of the search.
-"""
 
 
 class PrefixSearchOptimizer(MASOptimizer):
@@ -83,8 +82,7 @@ class PrefixSearchOptimizer(MASOptimizer):
             raise ValueError(f"population must be at least 2 (incumbent plus one candidate), got {population}.")
         super().__init__(mas, task, attributor=attributor)
         self.prefixes = prefixes if population is None else prefixes[: population - 1]
-        self.population = population
-        self._round = 0
+        self.step = 0
 
     def target_agent(self) -> str:
         """Return the agent to vary this step.
@@ -94,10 +92,10 @@ class PrefixSearchOptimizer(MASOptimizer):
             agent in round-robin order, which keeps the sweep deterministic.
         """
         names = list(self.mas.agents)
-        scored = {name: values for name, values in self.credit.items() if name in self.mas.agents and values}
+        scored = {name: values for name, values in self.credit.items() if values}
         if scored:
             return min(scored, key=lambda name: sum(scored[name]) / len(scored[name]))
-        return names[self._round % len(names)]
+        return names[self.step % len(names)]
 
     def propose(self) -> list[MAS]:
         """Return one candidate per prefix, plus the incumbent.
@@ -109,18 +107,9 @@ class PrefixSearchOptimizer(MASOptimizer):
             The candidates.
         """
         agent = self.target_agent()
-        self._round += 1
-
+        self.step += 1
         base = self.mas.agents[agent].prompt
-        candidates = [self.mas]
-        seen = {base}
-        for prefix in self.prefixes:
-            prompt = f"{prefix} {base}".strip()
-            if prompt in seen:
-                continue
-            seen.add(prompt)
-            candidates.append(self.mas.copy(prompts={agent: prompt}))
-        return candidates
+        return [self.mas, *(self.mas.copy(prompts={agent: f"{prefix} {base}".strip()}) for prefix in self.prefixes)]
 
     def select(self, candidates: list[MAS], scores: list[float]) -> MAS:
         """Return the highest-scoring candidate.
@@ -133,5 +122,4 @@ class PrefixSearchOptimizer(MASOptimizer):
             The best one. Ties go to the earliest, and the incumbent is first, so
             a tie keeps the current system rather than drifting for no gain.
         """
-        best = max(range(len(candidates)), key=lambda index: scores[index])
-        return candidates[best]
+        return candidates[scores.index(max(scores))]

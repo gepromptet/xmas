@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from xmas.llms.telemetry import GENERATE, SCORE, CallLog
+from xmas.llms.call_log import CallLog
 
 
 class AnytimeTracker:
@@ -67,8 +67,8 @@ class AnytimeTracker:
         finite = [float(v) for v in scores if v == v]
         self._best = max([self._best, *finite]) if finite else self._best
 
-        generated = self.telemetry.by_operation(GENERATE)
-        probed = self.telemetry.by_operation(SCORE)
+        generated = [r for r in self.telemetry.records if r.operation == "generate"]
+        probed = [r for r in self.telemetry.records if r.operation == "score"]
         client_in = sum(r.input_tokens for r in generated) + sum(r.input_tokens for r in probed)
 
         row: dict[str, Any] = {

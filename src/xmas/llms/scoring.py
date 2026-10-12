@@ -1,9 +1,8 @@
-"""The result type shared by every backend's ``score``, and the protocol that names it."""
+"""The result type shared by every backend's ``score``."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
 
 
 @dataclass(frozen=True)
@@ -24,30 +23,6 @@ class ScoredSequence:
         return float(sum(self.token_logprobs))
 
     @property
-    def mean_logprob(self) -> float:
-        """Length-normalized log-probability, ``0.0`` for an empty continuation.
-
-        Length normalization matters whenever continuations of different lengths
-        are compared: a longer one accumulates more negative log-probability
-        simply by being longer.
-        """
-        return self.sum_logprob / len(self.token_logprobs) if self.token_logprobs else 0.0
-
-    @property
     def token_count(self) -> int:
         """Number of scored tokens."""
         return len(self.tokens)
-
-
-class SupportsScore(Protocol):
-    """What a backend must offer to serve as a probe.
-
-    Declared as a protocol rather than a base class so that an evaluation layer
-    depends on the *operation* and not on any one backend: :class:`~xmas.APILLM`
-    satisfies it, a vLLM backend would, and so does a test double. Nothing in
-    (CALINKA's, in gepromptet/calinka) may import a concrete model.
-    """
-
-    def score(self, context: str, continuation: str) -> ScoredSequence:
-        """Return the log-probability the model assigns to ``continuation``."""
-        ...
