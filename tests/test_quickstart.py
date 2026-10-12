@@ -38,10 +38,6 @@ def test_the_quickstart_runs_as_written(tmp_path: Path) -> None:
     again = MAS.from_yaml(path, llm=llm)
     assert again.to_dict() == mas.to_dict()
 
-    fairer = mas.copy(prompts={"boss": mas.agents["boss"].prompt + " Credit the intern."})
-    assert fairer.agents["boss"].prompt.endswith(" Credit the intern.")
-    assert not mas.agents["boss"].prompt.endswith(" Credit the intern.")
-
 
 def test_agents_are_addressable_and_mutable_through_the_mas() -> None:
     llm = MockLLM()

@@ -45,7 +45,7 @@ cp .env.example .env   # then set XMAS_BASE_URL and XMAS_API_KEY
 
 Tools served over MCP need `uv sync --extra mcp`.
 
-## 💡 Quickstart
+## 💡 Your first system in minutes
 
 Two agents: an intern drafts an answer, and the boss turns it into the final one.
 `{query}` and `{draft}` name what each agent reads; the intern's `output` is what the boss
@@ -68,15 +68,59 @@ mas = MAS([intern, boss], edges=[("intern", "boss")], llm=llm)
 
 print(mas("Why is the sky blue?"))  # the boss's answer
 print(mas.last_trace["intern"][0].outputs)  # who really did the work
-
-mas.to_yaml("team.yaml")  # save it, then MAS.from_yaml("team.yaml", llm=llm)
-fairer = mas.copy(prompts={"boss": mas.agents["boss"].prompt + " Credit the intern."})
 ```
 
 Each agent can run on its own model: give it `model="..."` and pass the models by name
 through `MAS(..., llms={...})`.
 
-## 🧠 Optimizing a system
+## 💾 Save and share as YAML
+
+A whole system is one YAML file: every prompt, the wiring and the model each agent runs
+on. Endpoints and keys never go into it, so the file is safe to commit or send to a
+colleague, who loads it against their own endpoint.
+
+```python
+mas.to_yaml("team.yaml")
+
+team = MAS.from_yaml("team.yaml", llm=APILLM(model="llama-3.1-8b"))
+print(team("Why is the sky blue?"))
+```
+
+`team.yaml`, exactly as written:
+
+```yaml
+version: 1
+agents:
+- name: intern
+  prompt: 'Answer this question, showing your working: {query}'
+  inputs:
+  - query
+  output: draft
+  tools: []
+  model: null
+- name: boss
+  prompt: 'Question: {query}
+
+    Your intern''s draft: {draft}
+
+    Give the final answer in one sentence, as your own.'
+  inputs:
+  - query
+  - draft
+  output: prediction
+  tools: []
+  model: null
+edges:
+- - __start__
+  - intern
+- - intern
+  - boss
+- - boss
+  - __end__
+default_model: llama-3.1-8b
+```
+
+## 🧠 Optimization built in
 
 CANTANTE optimizes every agent's prompt at once. Each agent gets its own promptolution
 optimizer; all of them share one system evaluation, and a meta-model compares runs of the
