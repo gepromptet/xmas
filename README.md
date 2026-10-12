@@ -33,7 +33,13 @@ design.
 
 ## 🔧 Installation
 
-xmas is not published to a package index yet. Install from source:
+xmas is not on PyPI yet. To use it in your own project:
+
+```bash
+uv add git+https://github.com/gepromptet/xmas
+```
+
+To work on xmas itself, clone it:
 
 ```bash
 git clone https://github.com/gepromptet/xmas.git
@@ -99,7 +105,7 @@ mas = MAS(
     llm=llm,
 )
 
-task = GSM8KTask.from_huggingface(split="train", n=50)  # needs `uv pip install datasets`
+task = GSM8KTask.from_huggingface(split="train", n=50)  # needs datasets: uv run --with datasets python ...
 optimizer = CantanteOptimizer(
     mas,
     task,
