@@ -90,7 +90,8 @@ from xmas import GSM8KTask
 from xmas.optimization import CantanteOptimizer, ContrastiveAttributor
 
 task = GSM8KTask.from_huggingface(split="train", n=50)  # needs: uv run --with datasets
-best = CantanteOptimizer(mas, task, ContrastiveAttributor(llm), OPRO, optimizer_kwargs={"meta_llm": llm}).optimize(n_steps=5)
+optimizer = CantanteOptimizer(mas, task, ContrastiveAttributor(llm), OPRO, optimizer_kwargs={"meta_llm": llm})
+best = optimizer.optimize(n_steps=5)
 best.to_yaml("team-optimized.yaml")
 ```
 
