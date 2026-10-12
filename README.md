@@ -75,97 +75,26 @@ through `MAS(..., llms={...})`.
 
 ## 💾 Save and share as YAML
 
-A whole system is one YAML file: every prompt, the wiring and the model each agent runs
-on. Endpoints and keys never go into it, so the file is safe to commit or send to a
-colleague, who loads it against their own endpoint.
+One file holds the whole system: prompts, wiring and models, never keys or endpoints.
 
 ```python
 mas.to_yaml("team.yaml")
-
-team = MAS.from_yaml("team.yaml", llm=APILLM(model="llama-3.1-8b"))
-print(team("Why is the sky blue?"))
-```
-
-`team.yaml`, exactly as written:
-
-```yaml
-version: 1
-agents:
-- name: intern
-  prompt: 'Answer this question, showing your working: {query}'
-  inputs:
-  - query
-  output: draft
-  tools: []
-  model: null
-- name: boss
-  prompt: 'Question: {query}
-
-    Your intern''s draft: {draft}
-
-    Give the final answer in one sentence, as your own.'
-  inputs:
-  - query
-  - draft
-  output: prediction
-  tools: []
-  model: null
-edges:
-- - __start__
-  - intern
-- - intern
-  - boss
-- - boss
-  - __end__
-default_model: llama-3.1-8b
+team = MAS.from_yaml("team.yaml", llm=llm)
 ```
 
 ## 🧠 Optimization built in
 
-CANTANTE optimizes every agent's prompt at once. Each agent gets its own promptolution
-optimizer; all of them share one system evaluation, and a meta-model compares runs of the
-same question to split the score into credit per agent. An agent whose change helped sees
-a better score, one whose change hurt sees a worse one.
+CANTANTE improves every agent's prompt at once, splitting each score into credit per agent.
 
 ```python
-from promptolution.optimizers import EvoPromptGA
-
-from xmas import MAS, APILLM, Agent, GSM8KTask
+from promptolution.optimizers import OPRO
+from xmas import GSM8KTask
 from xmas.optimization import CantanteOptimizer, ContrastiveAttributor
 
-llm = APILLM(model="llama-3.1-8b")
-
-mas = MAS(
-    [
-        Agent("solver", prompt="Solve: {query}\nShow your working.", output="draft"),
-        Agent("checker", prompt="Reply with only the final number.\n\n{draft}", inputs=["draft"], output="prediction"),
-    ],
-    edges=[("solver", "checker")],
-    llm=llm,
-)
-
-task = GSM8KTask.from_huggingface(split="train", n=50)  # needs datasets: uv run --with datasets python ...
-optimizer = CantanteOptimizer(
-    mas,
-    task,
-    attributor=ContrastiveAttributor(llm),  # credit per agent, from contrasting runs
-    optimizer_cls=EvoPromptGA,  # any promptolution optimizer, one per agent
-    initial_prompts={
-        "solver": ["Solve: {query}\nShow your working.", "Work step by step.\n\n{query}"],
-        "checker": ["Reply with only the final number.\n\n{draft}", "State just the number.\n\n{draft}"],
-    },
-    optimizer_kwargs={"meta_llm": llm},
-)
-
-best = optimizer.optimize(n_steps=5)
-print(optimizer.history)  # task score of the best system after each step
-print(optimizer.credit)  # mean credit per agent in the last round
-best.to_yaml("gsm8k-best.yaml")
+task = GSM8KTask.from_huggingface(split="train", n=50)  # needs: uv run --with datasets
+best = CantanteOptimizer(mas, task, ContrastiveAttributor(llm), OPRO, optimizer_kwargs={"meta_llm": llm}).optimize(n_steps=5)
+best.to_yaml("team-optimized.yaml")
 ```
-
-`EvolutionaryTopologyOptimizer` searches the wiring the same way, and
-`PrefixSearchOptimizer` is a deliberately trivial control that runs the loop with no
-algorithm in the way.
 
 ## 🔗 xmas and promptolution
 
