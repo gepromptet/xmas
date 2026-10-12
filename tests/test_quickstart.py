@@ -14,37 +14,34 @@ from .conftest import MockLLM
 
 
 def test_the_quickstart_runs_as_written(tmp_path: Path) -> None:
-    llm = MockLLM(lambda prompt: "391" if "Verify" in prompt else "17 * 23 = 391")
+    llm = MockLLM(lambda prompt: "A rocket." if "You are Santa" in prompt else "A rocket and a pony.")
 
-    solver = Agent("solver", prompt="Solve step by step.", output="draft")
-    checker = Agent(
-        "checker",
-        prompt="Verify and answer.",
-        inputs=["query", "draft"],
+    elf = Agent("elf", prompt="You are a workshop elf. Suggest one gift for this wish list: {query}", output="gift")
+    santa = Agent(
+        "santa",
+        prompt="You are Santa. Wish list: {query}\nYour elf suggests: {gift}\n"
+        "Give the final gift in one line. No ponies, the sleigh is full.",
+        inputs=["query", "gift"],
         output="prediction",
     )
 
-    mas = MAS([solver, checker], edges=[("solver", "checker")], llm=llm)
+    workshop = MAS([elf, santa], edges=[("elf", "santa")], llm=llm)
 
-    answer = mas("What is 17 * 23?")  # __call__ runs it
-    trace = mas.last_trace  # full per-agent record of that call
-
-    assert answer == "391"
+    assert workshop("A pony, a rocket and a PhD") == "A rocket."
+    trace = workshop.last_trace
     assert trace is not None
-    assert trace.agents == ("solver", "checker")
-    assert trace["solver"][0].outputs == {"draft": "17 * 23 = 391"}
+    assert trace.agents == ("elf", "santa")
+    assert trace["elf"][0].outputs == {"gift": "A rocket and a pony."}
+    assert "Your elf suggests: A rocket and a pony." in llm.calls[-1]
 
-    path = tmp_path / "gsm8k.yaml"
-    mas.to_yaml(path)  # serialization as methods
-    mas2 = MAS.from_yaml(path, llm=llm)
+    path = tmp_path / "workshop.yaml"
+    workshop.to_yaml(path)
+    again = MAS.from_yaml(path, llm=llm)
+    assert again.to_dict() == workshop.to_dict()
 
-    assert mas2.to_dict() == mas.to_dict()
-    assert mas2("What is 17 * 23?") == "391"
-
-    new = mas.copy(prompts={"solver": "Solve it carefully."})  # optimizers derive candidates this way
-
-    assert new.agents["solver"].prompt == "Solve it carefully."
-    assert mas.agents["solver"].prompt == "Solve step by step."
+    nicer = workshop.copy(prompts={"santa": workshop.agents["santa"].prompt + " Be jolly."})
+    assert nicer.agents["santa"].prompt.endswith(" Be jolly.")
+    assert not workshop.agents["santa"].prompt.endswith(" Be jolly.")
 
 
 def test_agents_are_addressable_and_mutable_through_the_mas() -> None:

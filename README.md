@@ -1,4 +1,4 @@
-# xmas
+# 🎄 xmas: multi-agent systems, wrapped and ready 🎁
 
 [![CI](https://github.com/gepromptet/xmas/actions/workflows/ci.yml/badge.svg)](https://github.com/gepromptet/xmas/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.12-blue)](https://www.python.org/)
@@ -6,97 +6,147 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**xmas is the multi-agent sibling of [promptolution](https://github.com/gepromptet/promptolution).**
-It keeps the same five nouns, Task, Predictor, LLM, Optimizer and ExperimentConfig, and
-lifts them one level: the multi-agent system itself is the Predictor, a structured one
-whose parameters are exposed as ordinary optimizable components, so per-agent prompts,
-the topology wiring the agents together, and the model bound to each node are all things
-an optimizer can improve against a task you care about. Because xmas builds directly on
-promptolution's base classes rather than reimplementing them, a single-agent system is
-not an analogy to a promptolution predictor, it is exactly one, and promptolution's
-optimizers plug in without a port. Within the gepromptet ecosystem that makes
-promptolution the N=1 case and xmas the general one.
+## 🎅 What is xmas?
 
-See [docs/design-principles.md](docs/design-principles.md) for the six principles that
-hold the design together.
+**xmas builds, runs and optimizes multi-agent systems.** Think of Santa's workshop 🎄: one
+elf reads the wish list, another builds the toy, a third wraps it 🎁, and Santa checks the
+list twice before anything goes down the chimney 🦌. That team is a multi-agent system,
+and xmas treats the whole workshop as one object: every agent's prompt, the edges that
+wire the agents together and the model behind each agent are ordinary parameters that an
+optimizer can improve against a task you care about. Every run leaves a full per-agent
+trace, so you can see which elf dropped the present. ❄️
 
-> **Status: pre-alpha.** Core inference and the optimization loop are in place.
-> Attribution methods, topology search and the experiment layer are not.
+xmas is the multi-agent sibling of [promptolution](https://github.com/gepromptet/promptolution).
+It builds on promptolution's base classes rather than reimplementing them: the system
+itself is the predictor, so a one-agent system is exactly a promptolution predictor, and
+promptolution's optimizers run on any agent without a port.
+promptolution is the N=1 case, xmas the general one.
 
-## Installation
+### Key Features
 
-xmas is not published to a package index. Install from source:
+- Build a system from plain `Agent` objects and edges; cycles are allowed and bounded.
+- Optimize prompts with CANTANTE, which splits one system score into credit per agent.
+- Search the topology itself: add, remove and rewire agents under a budget.
+- Bind a different model to each agent, and record tokens and cost per call.
+- Save and load a system as YAML; derive candidates with `copy` without touching the original.
+- Give agents tools, as Python functions or from an MCP server.
+
+See [docs/design-principles.md](docs/design-principles.md) for the principles behind the
+design.
+
+> **Status: pre-alpha.** Inference, the optimization loop, CANTANTE and topology search are
+> in place; the experiment layer is not.
+
+## 🔧 Installation
+
+xmas is not published to a package index yet. Install from source:
 
 ```bash
 git clone https://github.com/gepromptet/xmas.git
 cd xmas
 uv sync
+cp .env.example .env   # then set XMAS_BASE_URL and XMAS_API_KEY
 ```
 
-The core depends on `promptolution` and little else. Heavy backends live behind
-extras:
+Tools served over MCP need `uv sync --extra mcp`.
 
-```bash
-uv sync --extra mcp      # MCPTools: tools served over MCP
-```
+## 🚀 Quickstart: Santa's workshop
 
-## Quickstart
+Two agents: an elf proposes a gift, and Santa makes the final call. `{query}` and
+`{gift}` name what each agent reads; the elf's `output` is what Santa receives.
 
 ```python
-from xmas import Agent, MAS, APILLM
+from xmas import MAS, APILLM, Agent
 
-llm = APILLM(model="llama-3.1-8b", base_url="https://api.tomzehle.com/v1")
+llm = APILLM(model="llama-3.1-8b")  # endpoint and key come from XMAS_BASE_URL / XMAS_API_KEY
 
-solver = Agent("solver", prompt="Solve step by step.", output="draft")
-checker = Agent("checker", prompt="Verify and answer.", inputs=["query", "draft"], output="prediction")
+elf = Agent("elf", prompt="You are a workshop elf. Suggest one gift for this wish list: {query}", output="gift")
+santa = Agent(
+    "santa",
+    prompt="You are Santa. Wish list: {query}\nYour elf suggests: {gift}\n"
+    "Give the final gift in one line. No ponies, the sleigh is full.",
+    inputs=["query", "gift"],
+    output="prediction",
+)
 
-mas = MAS([solver, checker], edges=[("solver", "checker")], llm=llm)
+workshop = MAS([elf, santa], edges=[("elf", "santa")], llm=llm)
 
-answer = mas("What is 17 * 23?")  # __call__ runs it
-trace = mas.last_trace  # full per-agent record of that call
+print(workshop("A pony, a rocket and a PhD"))  # Santa's answer
+print(workshop.last_trace["elf"][0].outputs)  # what the elf proposed, from the trace
 
-mas.to_yaml("gsm8k.yaml")  # serialization as methods
-mas2 = MAS.from_yaml("gsm8k.yaml", llm=llm)
-new = mas.copy(prompts={"solver": "..."})  # optimizers derive candidates this way
+workshop.to_yaml("workshop.yaml")  # save it, then MAS.from_yaml("workshop.yaml", llm=llm)
+nicer = workshop.copy(prompts={"santa": workshop.agents["santa"].prompt + " Be jolly."})
 ```
 
-Agents are addressable and mutable through the system:
+Each agent can run on its own model: give it `model="..."` and pass the models by name
+through `MAS(..., llms={...})`.
+
+## 🧠 Optimizing a system
+
+CANTANTE optimizes every agent's prompt at once. Each agent gets its own promptolution
+optimizer; all of them share one system evaluation, and a meta-model compares runs of the
+same question to split the score into credit per agent. An agent whose change helped sees
+a better score, one whose change hurt sees a worse one.
 
 ```python
-mas.agents["solver"].prompt = "Solve carefully, showing each step."
+from promptolution.optimizers import EvoPromptGA
+
+from xmas import MAS, APILLM, Agent, GSM8KTask
+from xmas.optimization import CantanteOptimizer, ContrastiveAttributor
+
+llm = APILLM(model="llama-3.1-8b")
+
+mas = MAS(
+    [
+        Agent("solver", prompt="Solve: {query}\nShow your working.", output="draft"),
+        Agent("checker", prompt="Reply with only the final number.\n\n{draft}", inputs=["draft"], output="prediction"),
+    ],
+    edges=[("solver", "checker")],
+    llm=llm,
+)
+
+task = GSM8KTask.from_huggingface(split="train", n=50)  # needs `uv pip install datasets`
+optimizer = CantanteOptimizer(
+    mas,
+    task,
+    attributor=ContrastiveAttributor(llm),  # credit per agent, from contrasting runs
+    optimizer_cls=EvoPromptGA,  # any promptolution optimizer, one per agent
+    initial_prompts={
+        "solver": ["Solve: {query}\nShow your working.", "Work step by step.\n\n{query}"],
+        "checker": ["Reply with only the final number.\n\n{draft}", "State just the number.\n\n{draft}"],
+    },
+    optimizer_kwargs={"meta_llm": llm},
+)
+
+best = optimizer.optimize(n_steps=5)
+print(optimizer.history)  # task score of the best system after each step
+print(optimizer.credit)  # mean credit per agent in the last round
+best.to_yaml("gsm8k-best.yaml")
 ```
 
-## The degenerate case
+`EvolutionaryTopologyOptimizer` searches the wiring the same way, and
+`PrefixSearchOptimizer` is a deliberately trivial control that runs the loop with no
+algorithm in the way.
 
-A one-agent system is a promptolution predictor, not an analogue of one, so
-promptolution's own optimizers run against it with no adapter:
+## 📚 Scientific Publications
 
-```python
-from promptolution.tasks.classification_tasks import ClassificationTask
-from promptolution.utils.prompt import Prompt
+Methods implemented in xmas:
 
-mas = MAS([Agent("solver", prompt="Classify: {query}", output="prediction")], llm=llm)
-task = ClassificationTask(df, x_column="x", y_column="y")
+- **CANTANTE: Optimizing Agentic Systems via Contrastive Credit Attribution** — Zehle, 2026. [arXiv](https://arxiv.org/abs/2605.13295) · `CantanteOptimizer`, `ContrastiveAttributor`
 
-result = task.evaluate(Prompt("Classify: {query}"), predictor=mas)
-```
+xmas builds on:
 
-## Optimizing
+- **promptolution: A Unified, Modular Framework for Prompt Optimization** — Zehle et al., 2026. [EACL 2026](https://aclanthology.org/2026.eacl-demo.21/)
+- **CAPO: Cost-Aware Prompt Optimization** — Zehle et al., 2025. [AutoML 2025](https://proceedings.mlr.press/v293/zehle25a.html)
 
-Every part of a system is a component an optimizer can change. The loop is
-propose, evaluate through the task, select:
+## 🏗 Components
 
-```python
-from xmas.optimization import PrefixSearchOptimizer
-from xmas.tasks.gsm8k import GSM8KTask
-
-task = GSM8KTask.from_huggingface(split="test", n=50)
-best = PrefixSearchOptimizer(mas, task).optimize(n_steps=3)
-```
-
-`PrefixSearchOptimizer` is deliberately trivial and exists as a control: it
-exercises the whole loop with no algorithm in the way. Real methods arrive as
-`Attributor` and `Updater` implementations, not as new frameworks.
+- **`Agent`** – One node: a prompt template, the values it reads and the value it writes.
+- **`MAS`** – The system and the predictor: agents, edges, models and tools; runs a query and keeps its trace.
+- **`Trace`** – The per-agent record of one run: rendered prompts, outputs, tokens, tool calls.
+- **`MASTask`** – A dataset plus a reward over the system's answers, e.g. `GSM8KTask`.
+- **`APILLM`** – Any OpenAI-compatible endpoint, with scoring, tool turns and a per-call log.
+- **`MASOptimizer`** – Propose, evaluate through the task, select; CANTANTE and topology search build on it.
 
 ## Configuration
 
@@ -139,6 +189,6 @@ uv run mkdocs serve                       # docs at http://127.0.0.1:8000
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow, commit convention and review
 expectations.
 
-## License
+## 📄 License
 
 MIT. See [LICENSE](LICENSE).

@@ -13,7 +13,7 @@ from .conftest import MockLLM
 
 
 def build_pair(llm: MockLLM) -> MAS:
-    """The two-agent system from the README quickstart."""
+    """A two-agent solver and checker."""
     solver = Agent("solver", prompt="Solve step by step.", output="draft")
     checker = Agent("checker", prompt="Verify and answer.", inputs=["query", "draft"], output="prediction")
     return MAS([solver, checker], edges=[("solver", "checker")], llm=llm)
