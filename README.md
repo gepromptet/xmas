@@ -16,12 +16,6 @@ wire the agents together and the model behind each agent are ordinary parameters
 optimizer can improve against a task you care about. Every run leaves a full per-agent
 trace, so you can see which elf dropped the present. ❄️
 
-xmas is the multi-agent sibling of [promptolution](https://github.com/gepromptet/promptolution).
-It builds on promptolution's base classes rather than reimplementing them: the system
-itself is the predictor, so a one-agent system is exactly a promptolution predictor, and
-promptolution's optimizers run on any agent without a port.
-promptolution is the N=1 case, xmas the general one.
-
 ### Key Features
 
 - Build a system from plain `Agent` objects and edges; cycles are allowed and bounded.
@@ -127,6 +121,12 @@ best.to_yaml("gsm8k-best.yaml")
 `EvolutionaryTopologyOptimizer` searches the wiring the same way, and
 `PrefixSearchOptimizer` is a deliberately trivial control that runs the loop with no
 algorithm in the way.
+
+## 🔗 xmas and promptolution
+
+xmas builds on [promptolution](https://github.com/gepromptet/promptolution): a system is a
+promptolution predictor and a task is a promptolution task, so promptolution's optimizers
+run on any agent unchanged.
 
 ## 📚 Scientific Publications
 
