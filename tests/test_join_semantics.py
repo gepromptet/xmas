@@ -88,4 +88,5 @@ def test_balanced_fan_in_still_runs_once(mock_llm: MockLLM) -> None:
 
     assert len(trace["z"]) == 1
     (record,) = trace["z"]
-    assert record.inputs["from_x"] and record.inputs["from_y"]
+    assert record.inputs["from_x"]
+    assert record.inputs["from_y"]

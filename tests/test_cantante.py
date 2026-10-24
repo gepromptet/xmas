@@ -24,6 +24,7 @@ from xmas import MAS, Agent, MASTask
 from xmas.optimization import broker, cantante
 from xmas.optimization.attribution import UniformAttributor
 from xmas.optimization.cantante import CantanteOptimizer
+from xmas.optimization.updaters import AgentPromptView, movable_agents
 from xmas.trace import AgentRecord, Trace
 
 from .conftest import MockLLM
@@ -287,3 +288,23 @@ def test_unattributed_rollouts_fall_back_to_the_measured_score_and_are_counted()
 
     assert optimizer.unattributed > 0
     assert all(not math.isnan(value) for values in optimizer.credit.values() for value in values)
+
+
+def test_agents_sharing_a_prompt_are_optimized_as_one() -> None:
+    def respond(prompt: str) -> str:
+        index = prompt.rsplit("question-", 1)[-1][:1] if "question-" in prompt else "0"
+        return f"answer-{index}" if GOOD in prompt else "no idea"
+
+    llm = MockLLM(respond)
+    agents = [Agent("first", "judge {query}", "x"), Agent("second", "judge {query}", "y", {"query": "x"})]
+    mas = MAS(agents, [("first", "second")], llm=llm, prompt_names={"first": "judge", "second": "judge"})
+    assert movable_agents(mas) == ["first"]
+    AgentPromptView(mas, "first").predict(prompts=["new {query}"], xs=["question-0"])
+    assert llm.calls == ["new question-0", "new no idea"]  # the candidate reaches every agent sharing it
+
+    Scripted.candidates = {"first": [f"one {GOOD} {{query}}", "judge {query}"]}
+    candidates = CantanteOptimizer(mas, task(), UniformAttributor(), Scripted, inner_steps=1).propose()
+    assert [c.agents["second"].prompt for c in candidates] == ["judge {query}", f"one {GOOD} {{query}}"]
+    frozen = MAS(agents, [("first", "second")], llm=llm, prompt_names={"first": "j", "second": "j"}, frozen=["second"])
+    with pytest.raises(ValueError, match="frozen"):
+        movable_agents(frozen)

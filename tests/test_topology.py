@@ -15,8 +15,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from xmas import MAS, Agent, MASTask
+from xmas import MAS, Agent, Budget, Edge, MASTask, Step
+from xmas.edges import EdgeKind
 from xmas.graph import END, START, back_edges
+from xmas.health import HealthSettings
 from xmas.optimization.evolution import EvolutionaryTopologyOptimizer
 from xmas.optimization.graph_updater import GraphUpdater
 from xmas.optimization.synthesis import LLMPromptSynthesizer, MechanicalSynthesizer, Rewrite
@@ -31,8 +33,9 @@ from xmas.optimization.topology import (
     terminals,
     within_budget,
 )
+from xmas.optimization.updaters import PromptUpdater
 
-from .conftest import MockLLM
+from .conftest import MockLLM, count_words
 
 SEED_NAMES = ["solver", "checker"]
 SEED_EDGES = [("solver", "checker")]
@@ -88,7 +91,7 @@ def test_every_mutation_and_crossover_builds_a_runnable_system(max_cycles: int) 
         parent = rng.choice(population)
         names, edges = mutate(*parent, budget, rng, rng.randint(1, 3), "solver")
         assert is_valid(names, edges, budget, "solver"), (names, edges)
-        _build(names, edges).run("q")
+        build(names, edges).run("q")
         cyclic += 1 if cycles(names, edges) else 0
 
         population.append((names, edges))
@@ -96,12 +99,12 @@ def test_every_mutation_and_crossover_builds_a_runnable_system(max_cycles: int) 
 
         child = crossover(rng.choice(population), rng.choice(population), budget, rng, "solver")
         assert is_valid(*child, budget, "solver"), child
-        _build(*child).run("q")
+        build(*child).run("q")
 
     assert (cyclic > 0) is (max_cycles > 0), "the cycle budget decides whether cycles appear at all"
 
 
-def _build(names: list[str], edges: list[tuple[str, str]]) -> MAS:
+def build(names: list[str], edges: list[tuple[str, str]]) -> MAS:
     """Construct a system from a bare topology, which is the validity predicate."""
     agents = [Agent(name, f"{name} {{query}}", output=f"{name}_out") for name in names]
     return MAS(agents=agents, edges=mas_edges(names, edges, "solver"), llm=MockLLM(lambda prompt: "ok"))
@@ -156,7 +159,7 @@ def test_a_retry_loop_gets_both_its_entry_and_its_exit_named() -> None:
     # engine hands the loop-or-continue decision to.
     assert (("checker", END)) in wiring
 
-    mas = _build(names, edges)
+    mas = build(names, edges)
     assert back_edges(mas.graph) == {("checker", "solver")}
     assert mas.run("q").error is None
 
@@ -311,3 +314,104 @@ def test_the_population_keeps_the_best_candidates_as_future_parents() -> None:
     assert len(optimizer.population) == 2
     for member in optimizer.population:
         assert nx.is_directed_acyclic_graph(member.graph)
+
+
+# ----------------------------------------------------------------- version 2
+
+
+def judged(*, branches: bool = False) -> MAS:
+    """Build planner -> writer -> count -> judge: a step, a frozen json judge, health and every runtime field set.
+
+    With ``branches``, the judge decides between ``publish`` and ``apology``,
+    which both feed ``final``.
+    """
+    agents = [
+        Agent("judge", "Judge {draft}: {counts}", output="verdict", inputs=["draft", "counts"], output_type="json"),
+        Agent("planner", "Plan an answer to {query}", output="plan"),
+        Agent("writer", "Write about {query} along {plan}", output="draft", inputs=["query", "plan"], model="strong"),
+    ]
+    edges: list[tuple[str, str] | Edge] = [("planner", "writer"), ("writer", "count"), ("count", "judge")]
+    state = {"draft": {"merge": "last"}}
+    if branches:
+        agents += [
+            Agent("publish", "Publish {draft}", output="published", inputs=["draft"]),
+            Agent("apology", "Apologise for {query}", output="published"),
+            Agent("final", "Finish with {published}", output="answer", inputs=["published"]),
+        ]
+        edges += [
+            Edge("judge", "publish", EdgeKind.WHEN, when="verdict.fits"),
+            Edge("judge", "apology", EdgeKind.ELSE),
+            ("publish", "final"),
+            ("apology", "final"),
+        ]
+        state["published"] = {"merge": "last"}
+
+    def answer(prompt: str) -> str:
+        return '{"fits": true}' if prompt.startswith("Judge") else "A short draft."
+
+    return MAS(
+        agents=agents,
+        edges=edges,
+        steps=[Step("count", uses="count_words")],
+        llm=MockLLM(answer),
+        llms={"strong": MockLLM(answer)},
+        max_steps=17,
+        default_model="base-model",
+        tools=[count_words],
+        max_tool_rounds=2,
+        budget=Budget(max_calls=50),
+        inputs={"query": "text"},
+        state=state,
+        frozen=("judge",),
+        health=HealthSettings(min_samples=2),
+    )
+
+
+def test_graph_updater_keeps_kinds_frozen_and_conditions(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A rebuild must not drop a field of the system, nor turn a step into an
+    # agent: steps stay steps, every field reaches the candidate, and a
+    # candidate the check refuses (say the writer was removed, so nothing
+    # writes the draft) is dropped rather than raised.
+    budget = TopologyBudget(min_agents=2, max_agents=7, max_edges=12)
+    mas = judged()
+    mas.max_visits = 1  # not the default, so a rebuild that drops it shows
+    candidates = updater(seed=2, budget=budget).propose(mas, {}, n=6)
+
+    assert candidates
+    for candidate in candidates:
+        assert candidate.steps == mas.steps
+        assert isinstance(candidate.steps["count"], Step)
+        assert "count" not in candidate.agents
+        assert candidate.agents["judge"] == mas.agents["judge"]
+        kept = ("version", "inputs", "merges", "boxes", "frozen", "health")
+        assert [getattr(candidate, name) for name in kept] == [getattr(mas, name) for name in kept]
+        runtime = ("llm", "llms", "max_steps", "default_model", "tools", "max_tool_rounds", "max_visits", "budget")
+        assert [getattr(candidate, name) for name in runtime] == [getattr(mas, name) for name in runtime]
+        assert candidate.run("cats").error is None
+
+    # Conditional edges and their endpoints stay exactly as they were, in order.
+    branched = judged(branches=True)
+    conditions = [edge for edge in branched.edges if edge.kind is not EdgeKind.PLAIN]
+    proposer = updater(seed=4, budget=budget)
+    candidates = proposer.propose(branched, {}, n=6) + proposer.recombine(branched, branched, n=2)
+
+    assert candidates
+    for candidate in candidates:
+        assert [edge for edge in candidate.edges if edge.kind is not EdgeKind.PLAIN] == conditions
+        for name in ("judge", "publish", "apology"):
+            assert candidate.agents[name] == branched.agents[name]
+        assert {("count", "judge"), ("publish", "final"), ("apology", "final")} <= set(proposer.edges_of(candidate))
+        assert candidate.steps == branched.steps
+
+    # Credit never steers a topology candidate to the frozen judge, which no candidate may rewire.
+    credit = {"judge": [-1.0], "writer": [0.5], "planner": [0.2]}
+    assert updater(seed=2, budget=budget).weakest_agent(mas, credit) == "planner"
+    assert updater(seed=2, budget=budget).weakest_agent(mas, {"judge": [-1.0]}) is None
+
+    # A prompt optimizer never picks the frozen judge, not even when it earned least.
+    prompts = PromptUpdater(object, None)  # type: ignore[arg-type]
+    assert prompts.target_agent(mas, {}) == "planner"
+    assert prompts.target_agent(mas, {"judge": [-1.0], "writer": [0.5], "planner": [0.2]}) == "planner"
+    monkeypatch.setattr(mas, "frozen", frozenset(mas.agents))
+    with pytest.raises(ValueError, match="frozen"):
+        prompts.target_agent(mas, {})

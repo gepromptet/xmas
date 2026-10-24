@@ -2,7 +2,7 @@
 
 A trimmed copy of the seed implementation, kept so that
 `xmas.optimization.attribution.ContrastiveAttributer` can be checked against the
-code it was ported from rather than against a golden file this repository wrote
+code it came from rather than against a golden file this repository wrote
 for itself.
 
 **Source:** `mas_lib/attribution/{base,absolute}.py` at `tritthart/mas-optimization`
@@ -20,9 +20,11 @@ docstrings are stripped, so either ref gives the same fixture.
 - `logger` is a module-level no-op instead of the seed's configured logger.
 - `AgentPromptBatch` is reduced to the one method the attributer calls,
   `get_agent_names()`.
+- No name starts with an underscore, as in the rest of xmas: `_clean_state` is
+  `clean_state`, `self._agent_names` is `self.agent_names`, and so on.
 
-Everything that computes credit is verbatim: the grouping, the seeded shuffle,
-the prompt payload, the response parsing and the clipping.
+Everything that computes credit is verbatim but for those names: the grouping,
+the seeded shuffle, the prompt payload, the response parsing and the clipping.
 
 **Licensing:** neither seed repository carries a license, and this directory
 copies from one of them. That is tolerable while xmas is private and Tom owns

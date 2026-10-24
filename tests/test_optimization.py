@@ -250,7 +250,7 @@ def test_agent_prompt_view_rejects_an_unknown_agent() -> None:
 
 
 def test_prompt_updater_runs_a_promptolution_optimizer_unmodified() -> None:
-    """P4 made executable: a promptolution optimizer is a prompt updater for one node."""
+    """New methods as new components: a promptolution optimizer is a prompt updater for one node."""
     task = gsm8k_task()
     mas = single_agent(prefix_sensitive_llm())
     updater = PromptUpdater(AddMagic, task=task)

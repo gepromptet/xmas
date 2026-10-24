@@ -4,7 +4,7 @@ Founding premise: single-prompt optimization is the N=1 case of multi-agent-syst
 
 **P1. Same five nouns, one lift.** Task, Predictor, LLM, Optimizer, and ExperimentConfig keep their promptolution meanings. The lift: the MAS is the Predictor, a structured predictor whose parameters (per-agent prompts, topology, per-node model bindings) are exposed as optimizable components. A one-node graph is a promptolution predictor.
 
-**P2. Optimizers act through the Task, never around it.** The contract is a narrow evaluate; any optimizer runs on any task. Evaluation strategy (generation-based vs. likelihood probing) is a Task-level concern, invisible to optimizers: a probing Task can wrap any other Task and every optimizer runs unchanged.
+**P2. Optimizers act through the Task, never around it.** The contract is a narrow evaluate; any optimizer runs on any task. Evaluation strategy (generation-based vs. likelihood probing) is a Task-level concern, invisible to optimizers.
 
 **P3. One LLM interface owns all inference concerns.** Backends (API, vLLM, local), caching, concurrency, and token metering live in the LLM layer and nowhere else. xmas adds score() as generate()'s sibling (teacher-forced logprob scoring of a fixed continuation, with assistant-token masking as a standalone utility) and per-node model binding. score() is the framework's one probing primitive: ranking a fixed set of options by their first token is a different measurement and is deliberately not part of the research path, so no interface for it exists here.
 

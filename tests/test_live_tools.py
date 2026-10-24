@@ -26,7 +26,7 @@ import signal
 import socket
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,9 +38,8 @@ pytest.importorskip("mcp")
 from xmas import APILLM, MAS, Agent
 from xmas.tools.mcp import MCPTools
 
-from .conftest import requires_gateway
+from .conftest import MockLLM, req, requires_gateway
 from .test_live_gateway import GATEWAY_CONCURRENCY, MODEL
-from .test_tools import ToolMockLLM, req
 
 SERVING_XMAS_DIR = Path(os.environ.get("XMAS_SERVING_XMAS_DIR", Path.home() / "serving-xmas"))
 """The serving-xmas checkout the dev server is started from."""
@@ -58,21 +57,21 @@ LIVE_TOOLS_MODEL_ENV = "XMAS_LIVE_TOOLS_MODEL"
 """Overrides the live test's model; unset, it is ``test_live_gateway.MODEL``."""
 
 
-def _docker_reachable() -> bool:
+def docker_reachable() -> bool:
     if shutil.which("docker") is None:
         return False
     try:
-        return subprocess.run(["docker", "info"], capture_output=True, timeout=20).returncode == 0
+        return subprocess.run(["docker", "info"], capture_output=True, timeout=20, check=False).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
 
 requires_docker = pytest.mark.skipif(
-    not _docker_reachable(), reason="docker is not reachable; the serving-xmas dev server needs it"
+    not docker_reachable(), reason="docker is not reachable; the serving-xmas dev server needs it"
 )
 
 
-def _free_port() -> int:
+def free_port() -> int:
     while True:
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
@@ -81,7 +80,7 @@ def _free_port() -> int:
             return port
 
 
-def _job_containers() -> set[str]:
+def job_containers() -> set[str]:
     listed = subprocess.run(
         ["docker", "ps", "-aq", "--no-trunc", "--filter", f"label={JOB_LABEL}"],
         capture_output=True,
@@ -102,6 +101,34 @@ class DevServer:
     """A key scoped to ``run_python``."""
 
 
+def server_env(base: Mapping[str, str], settings: Mapping[str, str]) -> dict[str, str]:
+    """Return the dev server's environment: ``base`` minus inherited settings, plus ``settings``.
+
+    ``VIRTUAL_ENV`` and every ``XMAS_*`` (gateway URL and key included) are dropped
+    because serving-xmas needs none of them; every inherited ``SX_*`` (say a
+    caller's ``SX_STATE_DIR`` or ``SX_TEST_KEY``) is dropped so that only
+    ``settings`` configures the server.
+    """
+    env = {k: v for k, v in base.items() if k != "VIRTUAL_ENV" and not k.startswith(("XMAS_", "SX_"))}
+    env.update(settings)
+    return env
+
+
+def test_server_env_drops_inherited_settings() -> None:
+    base = {
+        "PATH": "/usr/bin",
+        "HOME": "/home/x",
+        "VIRTUAL_ENV": "/venv",
+        "XMAS_API_KEY": "gateway-key",
+        "SX_TEST_KEY": "sk-sx-caller",
+        "SX_STATE_DIR": "/caller/state",
+        "SX_PORT": "8000",
+    }
+    env = server_env(base, {"SX_PORT": "4242", "SX_LOG_LEVEL": "warning"})
+    assert env == {"PATH": "/usr/bin", "HOME": "/home/x", "SX_PORT": "4242", "SX_LOG_LEVEL": "warning"}
+    assert base["SX_STATE_DIR"] == "/caller/state"  # the caller's mapping is left alone
+
+
 @pytest.fixture(scope="module")
 def serving_xmas(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DevServer]:
     """Start a serving-xmas dev server, yield its URL and a run_python key, then stop it.
@@ -114,10 +141,9 @@ def serving_xmas(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DevServer
         pytest.skip(f"needs uv and a serving-xmas checkout at {SERVING_XMAS_DIR} (XMAS_SERVING_XMAS_DIR)")
 
     root = tmp_path_factory.mktemp("serving-xmas")
-    port = _free_port()
-    # serving-xmas needs none of xmas's own settings (gateway URL and key included).
-    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV" and not k.startswith("XMAS_")}
-    env.update(
+    port = free_port()
+    env = server_env(
+        os.environ,
         {
             "SX_BIND_HOST": "127.0.0.1",
             "SX_PORT": str(port),
@@ -128,7 +154,7 @@ def serving_xmas(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DevServer
             "SX_POLICY_PATH": str(root / "policy.json"),
             "SX_MAX_CONTAINERS": "2",
             "SX_LOG_LEVEL": "warning",
-        }
+        },
     )
     (root / "workspace").mkdir()
     serving = [uv, "run", "--frozen", "--project", str(SERVING_XMAS_DIR), "serving"]
@@ -144,7 +170,7 @@ def serving_xmas(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DevServer
     key = issued.stdout.splitlines()[0].strip()
     assert key.startswith("sk-sx-"), f"unexpected `keys issue` output: {issued.stdout!r}"
 
-    before = _job_containers()
+    before = job_containers()
     log_path = root / "server.log"
     with log_path.open("ab") as log:
         proc = subprocess.Popen([*serving, "serve"], env=env, stdout=log, stderr=log, start_new_session=True)
@@ -172,7 +198,7 @@ def serving_xmas(tmp_path_factory: pytest.TempPathFactory) -> Iterator[DevServer
                 os.killpg(proc.pid, signal.SIGKILL)
             proc.wait()
     deadline = time.monotonic() + 30
-    while (left := _job_containers() - before) and time.monotonic() < deadline:
+    while (left := job_containers() - before) and time.monotonic() < deadline:
         time.sleep(0.5)
     assert not left, f"job containers left behind: {sorted(left)}"
 
@@ -189,7 +215,7 @@ def coder() -> Agent:
 @requires_docker
 def test_a_scripted_model_runs_python_on_the_dev_server(serving_xmas: DevServer) -> None:
     """The server plumbing without a gateway: a scripted model, a real sandboxed run."""
-    llm = ToolMockLLM([("", [req("run_python", '{"code": "print(2**20)"}')]), (ANSWER, [])])
+    llm = MockLLM(turns=[("", [req("run_python", '{"code": "print(2**20)"}')]), (ANSWER, [])])
     with MCPTools(serving_xmas.url, serving_xmas.key, timeout_s=120) as remote:
         assert [t.name for t in remote.tools()] == ["run_python"]
         trace = MAS(agents=[coder()], llm=llm, tools=[remote]).run(QUESTION)

@@ -1,4 +1,4 @@
-"""Parity between the xmas contrastive attributor and the seed it was ported from.
+"""Parity between the xmas contrastive attributor and the seed code it reproduces.
 
 The port changed the input type (traces rather than task state dicts), the prompt
 (one benchmark-specific paragraph removed, the terminal variable named rather than
@@ -58,13 +58,13 @@ class CannedJudge(BaseLLM):
                         for index, agent in enumerate(AGENTS)
                     }
                 }
-                for position in range(_declared_size(prompt))
+                for position in range(declared_size(prompt))
             ]
             responses.append(f"reasoning\n<attribution>{json.dumps({'executions': executions})}</attribution>")
         return responses
 
 
-def _declared_size(prompt: str) -> int:
+def declared_size(prompt: str) -> int:
     """How many executions the prompt says it wants judged.
 
     Read from the formatting rules rather than by parsing the payload, because

@@ -51,6 +51,8 @@ docs: document the XMAS_BASE_URL convention
 |---|---|---|
 | Lint | ruff | `uv run ruff check .` |
 | Format | ruff | `uv run ruff format .` |
+| Dead code | vulture | `uv run vulture xmas tests --min-confidence 80` |
+| Dependencies | deptry | `uv run deptry .` |
 | Types | mypy (strict) | `uv run mypy` |
 | Tests | pytest | `uv run pytest` |
 
@@ -59,6 +61,8 @@ House rules the tools do not catch:
 - **Public API is typed and documented.** Google-style docstrings, checked by ruff's `D`
   rules. Strict mypy means no untyped defs and no implicit `Any`.
 - **Line length is 120.**
+- **Nothing starts with an underscore**, truly private or not: the public surface is each
+  module's `__all__` and the docs. `tests/test_naming.py` checks it.
 - **No credentials, ever.** Configuration comes from the environment
   (`XMAS_BASE_URL`, `XMAS_API_KEY`). `.env` is gitignored and gitleaks scans every commit.
 - **No run artifacts.** Results, logs, checkpoints and datasets stay out of the repo.
@@ -80,7 +84,7 @@ until promptolution widens its supported range.
 
 ## Versioning
 
-`__version__` lives in `src/xmas/__init__.py` and the build reads it from there. Keep it a
+`__version__` lives in `xmas/__init__.py` and the build reads it from there. Keep it a
 plain string literal on its own line. Do not duplicate the version into `pyproject.toml`.
 
 ## Docs

@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use xmas in your research, please cite it as below."
+title: xmas
+abstract: >-
+  A framework for building, running and optimizing multi-agent systems. A system is a
+  typed graph of agents, code steps, people and chains, saved as a .mas bundle, with
+  every run logged; its prompts, wiring and models are optimizable components.
+type: software
+authors:
+  - family-names: Zehle
+    given-names: Tom
+license: Apache-2.0
+repository-code: "https://github.com/gepromptet/xmas"
+keywords:
+  - multi-agent systems
+  - prompt optimization
+  - large language models
+  - agentic systems

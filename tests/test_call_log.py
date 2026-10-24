@@ -385,7 +385,7 @@ def test_a_rate_limit_is_not_mistaken_for_a_capability_refusal(monkeypatch: pyte
     """501 and 429 both refuse the call, and only one of them is worth waiting out."""
     monkeypatch.setattr(httpx, "post", lambda url, **kwargs: score_response(501))
 
-    with pytest.raises(Exception) as caught:
+    with pytest.raises(XmasError) as caught:
         build_llm().score("context", "continuation")
 
     assert isinstance(caught.value, XmasError)

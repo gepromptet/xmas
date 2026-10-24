@@ -38,9 +38,25 @@ plugins:
             show_source: true
             show_root_heading: true
             docstring_style: google
+            # A module's __all__ says what is public; nothing is hidden by a leading underscore.
+            filters: public
 
 nav:
   - Home: index.md
+  - Guide:
+      - Steps and values: guide/steps-and-values.md
+      - Answers with a shape: guide/answer-forms.md
+      - Conditions and loops: guide/conditions-and-loops.md
+      - Reading a run: guide/reading-a-run.md
+      - Drawing a system: guide/drawing-a-system.md
+      - A system inside a system: guide/boxes.md
+      - Once per item: guide/chains.md
+      - Several values in and out: guide/run-state.md
+      - Pictures and files: guide/media.md
+      - People, Stop and races: guide/people.md
+      - Bundles: guide/bundles.md
+      - Optimization: guide/optimization.md
+      - Where this is going: guide/roadmap.md
   - Design principles: design-principles.md
   - API reference: api.md
 
@@ -54,4 +70,4 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
 
-copyright: MIT licensed. Built by gepromptet.
+copyright: Apache-2.0 licensed. Built by gepromptet.

@@ -17,7 +17,7 @@ repos:
   # --check .`, which does discovery properly, so README snippets are still
   # checked -- just by CI rather than here.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.6
+    rev: v0.17.2 # the ruff in uv.lock, so the hook and CI read the same rules
     hooks:
       - id: ruff-check
         args: [--fix]
@@ -36,6 +36,18 @@ repos:
         types: [python]
         pass_filenames: false
         require_serial: true
+      - id: vulture
+        name: vulture (dead code)
+        entry: uv run vulture xmas tests --min-confidence 80
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: deptry
+        name: deptry (dependencies)
+        entry: uv run deptry .
+        language: system
+        files: ^(pyproject\.toml|xmas/.*\.py)$
+        pass_filenames: false
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0

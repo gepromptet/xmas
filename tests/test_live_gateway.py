@@ -51,14 +51,20 @@ def throttled(max_tokens: int = 512) -> APILLM:
 SLICE = pd.DataFrame(
     {
         "question": [
-            "Natalia sold clips to 48 friends in April, and then she sold half as many "
-            "clips in May. How many clips did Natalia sell altogether in April and May?",
-            "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes "
-            "of babysitting. How much did she earn?",
-            "Betty is saving money for a new wallet which costs $100. Betty has only "
-            "half of the money she needs. Her parents decided to give her $15 for that "
-            "purpose, and her grandparents twice as much as her parents. How much more "
-            "money does Betty need to buy the wallet?",
+            (
+                "Natalia sold clips to 48 friends in April, and then she sold half as many "
+                "clips in May. How many clips did Natalia sell altogether in April and May?"
+            ),
+            (
+                "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes "
+                "of babysitting. How much did she earn?"
+            ),
+            (
+                "Betty is saving money for a new wallet which costs $100. Betty has only "
+                "half of the money she needs. Her parents decided to give her $15 for that "
+                "purpose, and her grandparents twice as much as her parents. How much more "
+                "money does Betty need to buy the wallet?"
+            ),
         ],
         "answer": ["#### 72", "#### 10", "#### 5"],
     }

@@ -15,7 +15,7 @@ from tests.seed_parity.seed_attributer import AbsoluteAttributer, AgentPromptBat
 __all__ = ["seed_attribute"]
 
 
-def seed_attribute(
+def seed_attribute(  # noqa: PLR0913  mirrors the vendored seed attributer's inputs one to one
     llm: object,
     agent_names: list[str],
     agent_var_mapping: Mapping[str, Mapping[str, object]],

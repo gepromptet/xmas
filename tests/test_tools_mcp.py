@@ -7,11 +7,13 @@ and sits behind a tiny bearer-auth middleware, so HTTP-level refusals are real.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -20,14 +22,18 @@ pytest.importorskip("mcp")
 
 import uvicorn
 from mcp.server.mcpserver import MCPServer
-from mcp.types import CallToolResult, ImageContent, TextContent
+from mcp.types import BlobResourceContents, CallToolResult, EmbeddedResource, ImageContent, TextContent
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from xmas import MAS, Agent, ToolCall
-from xmas.errors import XmasError
-from xmas.tools.mcp import MCPTools, result_text
+from xmas.errors import BadFormat, XmasError
+from xmas.media import Ref
+from xmas.nodes import Step
+from xmas.tools import index_tools, run_step
+from xmas.tools.mcp import MCPTools, media_blocks, result_text
+from xmas.values import JSON, TEXT, parse_type
 
-from .test_tools import ToolMockLLM, req
+from .conftest import MockLLM, req
 
 KEY = "sk-sx-good"
 
@@ -88,14 +94,39 @@ class Server:
             self.in_flight -= 1
             return "slept"
 
+        @mcp.tool()
+        def shout(text: str) -> str:
+            """Shout a text."""
+            return text.upper() + "!"
+
+        @mcp.tool()
+        def tally(text: str) -> str:
+            """Count a text's characters, as JSON."""
+            return json.dumps({"chars": len(text)})
+
+        @mcp.tool()
+        def paint(pages: int) -> CallToolResult:
+            """Paint pages, as pictures after a line of text, and a pdf of them."""
+            pictures = [
+                ImageContent(
+                    type="image", data=base64.b64encode(f"png-{page}".encode()).decode(), mime_type="image/png"
+                )
+                for page in range(pages)
+            ]
+            pdf = BlobResourceContents(uri="file:///deck.pdf", mime_type="application/pdf", blob="JVBERg==")
+            blob = [EmbeddedResource(type="resource", resource=pdf)] if pages == 0 else []
+            return CallToolResult(content=[TextContent(type="text", text="drawn"), *pictures, *blob])
+
         @mcp.tool(name="bad.name")
         def bad() -> str:
             """A name OpenAI would refuse."""
             return ""
 
-        self.app = self._auth(mcp.streamable_http_app())
+        self.app = self.auth(mcp.streamable_http_app())
 
-    def _auth(self, app: ASGIApp) -> ASGIApp:
+    def auth(self, app: ASGIApp) -> ASGIApp:
+        """Wrap ``app`` so each request needs a known bearer key; some keys get a set error status."""
+
         async def guarded(scope: Scope, receive: Receive, send: Send) -> None:
             if scope["type"] != "http":
                 await app(scope, receive, send)
@@ -149,7 +180,7 @@ def remote(server: tuple[Server, str]) -> Iterator[MCPTools]:
 
 def test_lists_tools_once_and_skips_names_openai_would_refuse(remote: MCPTools) -> None:
     names = [t.name for t in remote.tools()]
-    assert names == ["run_python", "refuse", "slow"]
+    assert names == ["run_python", "refuse", "slow", "shout", "tally", "paint"]
     run_python = remote.tools()[0]
     assert run_python.fn is None
     assert run_python.description == "Run Python code."
@@ -234,7 +265,7 @@ def test_http_refusals(server: tuple[Server, str], key: str, status: int, match:
 
 def test_a_mas_runs_remote_tools_and_ends_on_a_refusal(remote: MCPTools) -> None:
     agent = Agent("coder", "Compute {query}", output="answer", tools=["run_python", "refuse"])
-    llm = ToolMockLLM([("", [req("run_python", '{"code": "2**10"}')]), ("1024", [])])
+    llm = MockLLM(turns=[("", [req("run_python", '{"code": "2**10"}')]), ("1024", [])])
     mas = MAS(agents=[agent], llm=llm, tools=[remote])
     trace = mas.run("2**10")
     assert trace.error is None
@@ -244,6 +275,60 @@ def test_a_mas_runs_remote_tools_and_ends_on_a_refusal(remote: MCPTools) -> None
     llm.turns = [("", [req("refuse", '{"code": "too_many_concurrent", "status": 429, "retry_after_s": 1}')])]
     trace = mas.run("again")
     assert trace.error == "XmasError: mcp: too_many_concurrent (429): too_many_concurrent happened"
+
+
+def test_one_remote_callable_is_a_tool_and_a_step(server: tuple[Server, str]) -> None:
+    with MCPTools(server[1], KEY, writes={"tally": {"tally": "json"}}) as remote:
+        listed = {spec.name: spec for spec in remote.tools()}
+        assert listed["shout"].reads == {"text": TEXT}
+        assert listed["shout"].writes == {"shout": TEXT}
+        assert listed["tally"].writes == {"tally": JSON}
+
+        llm = MockLLM(turns=[("", [req("shout", '{"text": "hi"}')]), ("said hi", [])])
+        writer = Agent("writer", "Greet {query}.", output="draft", tools=["shout"])
+        steps = [
+            Step("loud", "shout", reads={"text": "draft"}, writes={"shout": "loud"}),
+            Step("size", "tally", reads={"text": "loud"}),
+        ]
+        mas = MAS([writer], [("writer", "loud"), ("loud", "size")], steps=steps, llm=llm, tools=[remote])
+        assert list(index_tools(mas.tools)) == ["run_python", "refuse", "slow", "shout", "tally", "paint"]
+        trace = mas.run("Tom")
+
+    assert trace.error is None
+    called, loud, size = trace.records
+    assert called.tool_calls == (ToolCall("shout", {"text": "hi"}, "HI!"),)
+    assert (loud.kind, loud.inputs, loud.outputs) == ("step", {"draft": "said hi"}, {"loud": "SAID HI!"})
+    assert (size.inputs, size.outputs) == ({"loud": "SAID HI!"}, {"tally": '{"chars": 8}'})
+    assert trace.output == '{"chars": 8}'
+
+
+def test_media_writes_from_a_remote_tool(
+    server: tuple[Server, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XMAS_STORE", str(tmp_path))
+    with MCPTools(server[1], KEY, writes={"paint": {"png": "image"}}) as remote:
+        spec = {item.name: item for item in remote.tools()}["paint"]
+        png = run_step(spec, remote, {"pages": 1})["png"]
+        assert isinstance(png, Ref)
+        assert png.location.startswith(str(tmp_path))
+        assert (png.read_bytes(), png.media_type) == (b"png-0", "image/png")
+        with pytest.raises(BadFormat, match="expected one image block, got 2"):
+            run_step(spec, remote, {"pages": 2})
+        assert remote.call_media("paint", {"pages": 0}) == [(b"%PDF", "application/pdf")]
+        with pytest.raises(XmasError, match="exit_code=1"):
+            remote.call_media("run_python", {"code": "raise"})
+
+    many = {"paint": {"pngs": "list of image"}}
+    with MCPTools(server[1], KEY, writes=many) as remote:
+        spec = {item.name: item for item in remote.tools()}["paint"]
+        assert spec.writes == {"pngs": parse_type("list of image")}
+        pngs = run_step(spec, remote, {"pages": 2})["pngs"]
+        assert [ref.read_bytes() for ref in pngs] == [b"png-0", b"png-1"]
+
+    # a text write of the same tool still names the picture, never inlines it
+    with MCPTools(server[1], KEY) as remote:
+        spec = {item.name: item for item in remote.tools()}["paint"]
+        assert run_step(spec, remote, {"pages": 1}) == {"paint": "drawn\n[image content omitted]"}
 
 
 # ------------------------------------------------------------- construction
@@ -282,6 +367,9 @@ def test_result_mapping_for_foreign_servers() -> None:
         result_text(CallToolResult(content=[TextContent(type="text", text="went wrong")], is_error=True))
     with pytest.raises(XmasError, match="tool failed"):
         result_text(CallToolResult(content=[], is_error=True))
+    bad = CallToolResult(content=[ImageContent(type="image", data="not base64!", mime_type="image/png")])
+    with pytest.raises(XmasError, match="base64 is invalid"):
+        media_blocks(bad)
     assert result_text(as_result({"other": 1}, is_error=False)) == '{"other": 1}'
 
 

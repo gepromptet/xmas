@@ -34,10 +34,14 @@ from .conftest import MockLLM
 SLICE = pd.DataFrame(
     {
         "question": [
-            "Natalia sold clips to 48 friends in April, and then she sold half as many "
-            "clips in May. How many clips did Natalia sell altogether in April and May?",
-            "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes "
-            "of babysitting. How much did she earn?",
+            (
+                "Natalia sold clips to 48 friends in April, and then she sold half as many "
+                "clips in May. How many clips did Natalia sell altogether in April and May?"
+            ),
+            (
+                "Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes "
+                "of babysitting. How much did she earn?"
+            ),
         ],
         "answer": ["#### 72", "#### 10"],
     }
@@ -190,7 +194,7 @@ def test_topology_search_improves_a_gsm8k_slice() -> None:
 
 
 def test_the_two_variants_compose_over_one_system() -> None:
-    # P4's claim in one test: prompts and topology are separate components on the
+    # New methods are new components, in one test: prompts and topology are separate components on the
     # same loop, so running both is alternating two optimizers rather than
     # reaching for a third framework. One problem in the slice yields to a better
     # prompt and the other to a better shape, so each variant carries half the

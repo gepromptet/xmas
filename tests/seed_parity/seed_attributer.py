@@ -1,7 +1,8 @@
 # Vendored verbatim from tritthart/mas-optimization main (2db997d),
 # mas_lib/attribution/{base,absolute}.py, itself adapted from
 # https://github.com/finitearth/cantante. See README.md for the three
-# substitutions. Do not edit to make a test pass.
+# substitutions and the names without a leading underscore. Do not edit to
+# make a test pass.
 # ruff: noqa
 # mypy: ignore-errors
 
@@ -19,10 +20,10 @@ class AgentPromptBatch:
     """The one method the attributer calls on the seed's batch object."""
 
     def __init__(self, agent_names):
-        self._agent_names = list(agent_names)
+        self.agent_names = list(agent_names)
 
     def get_agent_names(self):
-        return list(self._agent_names)
+        return list(self.agent_names)
 
 
 ATTRIBUTION_PROMPT = """# Task
@@ -205,7 +206,7 @@ class BaseAttributer(ABC):
         self.llm = llm
         self.agent_var_mapping = agent_var_mapping or {}
 
-    def _clean_state(self, state, only_include=None):
+    def clean_state(self, state, only_include=None):
         """Drop non-attribution fields from a single state dict (returns a copy)."""
         if state is None:
             return {}
@@ -215,9 +216,9 @@ class BaseAttributer(ABC):
             state = {k: v for k, v in state.items() if k in only_include}
         return state
 
-    def _state_to_agent_outputs(self, state):
+    def state_to_agent_outputs(self, state):
         """Convert a state dict into {agent_name: {key: value}}."""
-        state = self._clean_state(state)
+        state = self.clean_state(state)
         by_agent = {agent_name: {} for agent_name in self.agent_var_mapping}
         for agent_name, var_info in self.agent_var_mapping.items():
             for output_key in var_info["output_vars"]:
@@ -225,14 +226,14 @@ class BaseAttributer(ABC):
                     by_agent[agent_name][output_key] = state[output_key]
         return by_agent
 
-    def _extract_tag(self, text, tag):
+    def extract_tag(self, text, tag):
         m = re.search(rf"<{tag}>(.*?)</{tag}>", str(text), flags=re.DOTALL)
         return m.group(1).strip() if m else ""
 
     # Line-structured fields must remain intact.
     NO_TRUNCATE_KEYS = frozenset()
 
-    def _truncate_field_value(self, value):
+    def truncate_field_value(self, value):
         if self.max_tokens_per_field is None:
             return value
 
@@ -240,10 +241,10 @@ class BaseAttributer(ABC):
             return constrain_prompt_length(value, self.max_tokens_per_field)
 
         if isinstance(value, dict):
-            return {k: (v if k in self.NO_TRUNCATE_KEYS else self._truncate_field_value(v)) for k, v in value.items()}
+            return {k: (v if k in self.NO_TRUNCATE_KEYS else self.truncate_field_value(v)) for k, v in value.items()}
 
         if isinstance(value, list):
-            return [self._truncate_field_value(v) for v in value]
+            return [self.truncate_field_value(v) for v in value]
 
         return value
 
@@ -282,7 +283,7 @@ class AbsoluteAttributer(BaseAttributer):
         self.seed = seed
         self.rng = np.random.RandomState(seed)
 
-    def _build_all_prompts(self, agent_names, system_scores, intermediate_results):
+    def build_all_prompts(self, agent_names, system_scores, intermediate_results):
         """Build attribution prompts in groups of ``group_size`` runs."""
         n_queries = len(system_scores[0]) if len(system_scores) > 0 else 0
         n_runs = len(system_scores)
@@ -291,7 +292,7 @@ class AbsoluteAttributer(BaseAttributer):
         prompt_metadata = []
 
         for qi in range(n_queries):
-            query = self._clean_state(intermediate_results[0][qi])["query"]
+            query = self.clean_state(intermediate_results[0][qi])["query"]
 
             for group_start in range(0, n_runs, self.group_size):
                 group_end = min(group_start + self.group_size, n_runs)
@@ -304,17 +305,17 @@ class AbsoluteAttributer(BaseAttributer):
 
                 rollouts = []
                 for run_idx in shuffled_indices:
-                    state = self._clean_state(intermediate_results[run_idx][qi])
-                    rollouts.append(self._build_rollout(float(system_scores[run_idx][qi]), state))
+                    state = self.clean_state(intermediate_results[run_idx][qi])
+                    rollouts.append(self.build_rollout(float(system_scores[run_idx][qi]), state))
 
                 query_and_sets = {
                     "query": query,
                     "executions": rollouts,
                 }
 
-                query_and_sets = self._truncate_field_value(query_and_sets)
+                query_and_sets = self.truncate_field_value(query_and_sets)
 
-                prompt = self._safe_format_prompt(
+                prompt = self.safe_format_prompt(
                     self.prompt_template,
                     query_and_prompt_sets=json.dumps(query_and_sets, ensure_ascii=False, indent=2),
                     n_parametrizations=str(len(rollouts)),
@@ -329,14 +330,14 @@ class AbsoluteAttributer(BaseAttributer):
 
         return prompts, prompt_metadata
 
-    def _build_rollout(self, system_score, state):
+    def build_rollout(self, system_score, state):
         """Build one execution entry for the attribution prompt."""
         return {
             "system_score": system_score,
-            "agent_outputs": self._state_to_agent_outputs(state),
+            "agent_outputs": self.state_to_agent_outputs(state),
         }
 
-    def _safe_format_prompt(self, prompt, **kwargs):
+    def safe_format_prompt(self, prompt, **kwargs):
         """Format prompt template robustly via granular placeholder replacement."""
         for key, value in kwargs.items():
             placeholder = "{" + str(key) + "}"
@@ -347,11 +348,11 @@ class AbsoluteAttributer(BaseAttributer):
 
         return prompt
 
-    def _parse_attributions_response(self, response, agent_names, group_size):
+    def parse_attributions_response(self, response, agent_names, group_size):
         """Parse an attribution response into a run-by-agent matrix."""
         attribution_matrix = np.zeros((group_size, len(agent_names)))
 
-        payload = self._extract_tag(response, "attribution")
+        payload = self.extract_tag(response, "attribution")
         try:
             attributions_by_run = json.loads(payload)
             attributions_by_run = attributions_by_run["executions"]
@@ -375,7 +376,7 @@ class AbsoluteAttributer(BaseAttributer):
 
         n_runs = len(system_scores)
         n_queries = len(system_scores[0]) if len(system_scores) > 0 else 0
-        prompts, prompt_metadata = self._build_all_prompts(agent_names, system_scores, intermediate_results)
+        prompts, prompt_metadata = self.build_all_prompts(agent_names, system_scores, intermediate_results)
         try:
             responses = self.llm.get_response(prompts)
         except Exception as e:
@@ -384,7 +385,7 @@ class AbsoluteAttributer(BaseAttributer):
         attributed = {a: [[None] * n_queries for _ in range(n_runs)] for a in agent_names}
         for response, (qi, run_indices, shuffle_mapping) in zip(responses, prompt_metadata):
             group_size = len(run_indices)
-            attribution_matrix = self._parse_attributions_response(response, agent_names, group_size)
+            attribution_matrix = self.parse_attributions_response(response, agent_names, group_size)
 
             for shuffled_idx in range(group_size):
                 run_idx = shuffle_mapping[shuffled_idx]

@@ -2,7 +2,7 @@
 name = "xmas"
 description = "A lightweight framework for building and optimizing multi-agent systems."
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [{ name = "Tom Zehle" }]
 requires-python = ">=3.12,<3.13"
 dynamic = ["version"]
@@ -23,16 +23,22 @@ dependencies = [
   "promptolution>=2.3.0,<3.0.0",
   "networkx>=3.7",
   "httpx>=0.28",
-  "langgraph>=1.2.12",
+  "langgraph>=1.2.16,<1.3",
+  # Imported directly by xmas (store.py, runtime.py); both come with langgraph.
+  "langgraph-checkpoint>=4.3,<5",
+  "langchain-core>=1.0",
   "pyyaml>=6.0",
   # xmas.tools builds tool schemas with pydantic directly; pinned rather than
   # left transitive (via langgraph and openai).
   "pydantic>=2.7",
-  # Imported directly by src (api_llm.py, tools, tasks); bounds follow promptolution's.
+  # Imported directly by xmas (api_llm.py, tools, tasks); bounds follow promptolution's.
   "openai>=1.0.0",
   "numpy>=1.26.0,<3.0.0",
   "pandas>=2.2.2",
 ]
+
+[project.scripts]
+xmas = "xmas.cli:main"
 
 [project.urls]
 Repository = "https://github.com/gepromptet/xmas"
@@ -43,12 +49,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 # The version is single-sourced from the package. Keep the `__version__` line in
-# src/xmas/__init__.py; the build reads it from there.
+# xmas/__init__.py; the build reads it from there.
 [tool.hatch.version]
-path = "src/xmas/__init__.py"
+path = "xmas/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/xmas"]
+packages = ["xmas"]
 
 # ---------------------------------------------------------------------------
 # Optional extras: a minimal core, heavy backends opted into explicitly.
@@ -74,6 +80,8 @@ dev = [
   "types-networkx>=3.6.1.20260911",
   "pandas-stubs>=3.0.5.260914",
   "types-pyyaml>=6.0.12.20260906",
+  "vulture>=2.16",
+  "deptry>=0.25.1",
 ]
 
 # ---------------------------------------------------------------------------
@@ -82,7 +90,7 @@ dev = [
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-src = ["src", "tests"]
+src = ["xmas", "tests"]
 
 [tool.ruff.lint]
 select = [
@@ -100,11 +108,45 @@ select = [
   "PTH", # flake8-use-pathlib
   "TID", # flake8-tidy-imports
   "RUF", # ruff-specific
+  "C90", # mccabe: cyclomatic complexity per function
+  "PL",  # pylint: size limits (args, branches, returns, statements) and common mistakes
+  "RET", # flake8-return: no assign-then-return, no else after return
+  "PIE", # flake8-pie: unnecessary pass, spread, placeholders
+  "PERF", # perflint: loops that should be comprehensions or extend
+  "FURB", # refurb: modern idioms for old patterns
+  "ERA", # eradicate: commented-out code
+  "T20", # no print in the library; the CLI is the one place that prints
+  "PT",  # flake8-pytest-style
+  "A",   # flake8-builtins: no shadowed builtins
+  "BLE", # blind except: a swallowed Exception has hidden real bugs here before
+  "ISC", # implicit string concatenation
+  "FLY", # static join to f-string
+  "G",   # logging calls format lazily
+  "LOG", # logging misuse
+  "DTZ", # naive datetimes
+  "INP", # implicit namespace packages
+  "TC",  # imports used only for typing go under TYPE_CHECKING
+  "FBT", # boolean positional arguments; public ones that would break callers carry a noqa
+  # tryceratops, the readable part only: TRY003 (a class per message, 376 hits) is noise and
+  # TRY004 is wrong for spec checks, which report malformed data as ValueError on purpose.
+  "TRY002", "TRY201", "TRY203", "TRY300", "TRY400", "TRY401",
 ]
 ignore = [
   "D203", # incompatible with D211 (blank line before class docstring)
   "D213", # incompatible with D212 (multi-line summary position)
 ]
+
+# Ruff's defaults, written down so a change is a visible decision.
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-args = 5
+max-positional-args = 5
+max-branches = 12
+max-returns = 6
+max-statements = 50
+max-nested-blocks = 5 # PLR1702 is preview-only today; the limit is set for when it lands
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -119,7 +161,26 @@ ban-relative-imports = "parents"
 # Tests document themselves through their names, so docstrings are optional; and a
 # test double has to match the signature it is standing in for, whether or not it
 # uses every argument.
-"tests/**/*.py" = ["D100", "D103", "D104", "ARG001", "ARG002", "ARG005"]
+"tests/**/*.py" = [
+  "D100", "D103", "D104", "ARG001", "ARG002", "ARG005",
+  # A test asserts literal expected values; naming each one would hide what is checked.
+  "PLR2004",
+  # Tests import an extra, or re-import a module, inside the one test that needs it.
+  "PLC0415",
+  # Tools defined in tests have their hints read at runtime (typing.get_type_hints).
+  "TC001", "TC002", "TC003",
+  # pytest passes parametrized booleans by name, and doubles mirror the call they stand in for.
+  "FBT001", "FBT002", "FBT003",
+]
+# These two mirror documentation code blocks line for line, prints and output comments included.
+"tests/test_docs_guide.py" = ["T201", "ERA001"]
+"tests/test_readme_v2.py" = ["T201", "ERA001"]
+# The command line talks to its user through stdout.
+"xmas/cli.py" = ["T201"]
+# xmas.trace is public API and always imported qualified, so it never hides the stdlib trace.
+"xmas/trace.py" = ["A005"]
+# The typed errors are named for what happened (BudgetExceeded, Stopped), without an Error suffix.
+"xmas/errors.py" = ["N818"]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -129,7 +190,7 @@ docstring-code-format = true
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.12"
-files = ["src", "tests"]
+files = ["xmas", "tests"]
 strict = true
 warn_unreachable = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
@@ -157,9 +218,28 @@ addopts = "-ra --strict-markers --strict-config"
 xfail_strict = true
 
 [tool.coverage.run]
-source = ["src/xmas"]
+source = ["xmas"]
 branch = true
 
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+
+# ---------------------------------------------------------------------------
+# vulture: dead code. `uv run vulture xmas tests --min-confidence 80`
+# ---------------------------------------------------------------------------
+[tool.vulture]
+# Parameters a signature must have but the body does not read:
+ignore_names = [
+  "attrs",        # HTMLParser.handle_starttag override (convert.py)
+  "block_idx",    # promptolution evaluator override (optimization/broker.py)
+  "new_versions", # langgraph BaseCheckpointSaver.put override (store.py)
+  "maybe",        # test tool whose signature is what the test inspects (test_media.py)
+]
+
+# ---------------------------------------------------------------------------
+# deptry: unused, missing and transitive dependencies. `uv run deptry .`
+# ---------------------------------------------------------------------------
+[tool.deptry.per_rule_ignores]
+# datasets is imported lazily by GSM8KTask.from_huggingface and deliberately not a dependency.
+DEP001 = ["datasets"]

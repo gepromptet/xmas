@@ -133,7 +133,7 @@ def test_an_agent_without_a_model_or_default_is_an_error() -> None:
 def test_predict_rejects_mismatched_prompt_and_input_counts(mock_llm: MockLLM) -> None:
     mas = MAS([Agent("a", prompt="p", output="prediction")], llm=mock_llm)
     with pytest.raises(ValueError, match="must be parallel"):
-        mas.predict(prompts=["p1"], xs=["x1", "x2"])
+        mas.predict(prompts=["a prompt"], xs=["x1", "x2"])
 
 
 # --------------------------------------------------------------------- spec
