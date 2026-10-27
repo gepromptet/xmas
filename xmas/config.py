@@ -502,10 +502,18 @@ PARAMS: dict[str, tuple[type, ...]] = {
     "top_p": (int, float),
     "seed": (int,),
     "reasoning_effort": (str,),
+    "system_prompt": (str,),
 }
 """The model parameters a ``models:`` entry may set, with the types each takes."""
 
-LLM_PARAMS = {"max_tokens": "max_tokens", "timeout_s": "call_timeout_s"}  # the others go out with each request
+LLM_PARAMS = {
+    "max_tokens": "max_tokens",
+    "timeout_s": "call_timeout_s",
+    "temperature": "temperature",
+    "seed": "seed",
+    "system_prompt": "system_prompt",
+}
+"""The parameters that are :class:`~xmas.llms.APILLM` keywords; the rest go out with each request (``call_kwargs``)."""
 
 
 @dataclass(frozen=True)
@@ -558,7 +566,11 @@ class ModelEntry(Capabilities):
         return {**({"model": self.model} if self.model else {}), **super().to_spec(), **dict(self.params)}
 
     def llm_kwargs(self) -> dict[str, Any]:
-        """Return the parameters as :class:`~xmas.llms.APILLM` takes them; ``timeout_s`` is ``call_timeout_s``."""
+        """Return the parameters as :class:`~xmas.llms.APILLM` takes them: its keywords, the rest as ``call_kwargs``.
+
+        ``timeout_s`` is ``call_timeout_s``; ``temperature``, ``seed`` and
+        ``system_prompt`` are the constructor's own parameters.
+        """
         kwargs: dict[str, Any] = {LLM_PARAMS[key]: value for key, value in self.params if key in LLM_PARAMS}
         sent = {key: value for key, value in self.params if key not in LLM_PARAMS}
         return {**kwargs, "call_kwargs": sent} if sent else kwargs

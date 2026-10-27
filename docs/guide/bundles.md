@@ -87,8 +87,8 @@ models:
   editor: {model: llama-3.1-70b, max_tokens: 2000, timeout_s: 120, temperature: 0.2}
 ```
 
-The parameters are `max_tokens`, `timeout_s`, `temperature`, `top_p`, `seed` and
-`reasoning_effort`. They apply to the models `MAS.load` builds.
+The parameters are `max_tokens`, `timeout_s`, `temperature`, `top_p`, `seed`, `reasoning_effort` and
+`system_prompt`. They apply to the models `MAS.load` builds.
 
 `xmas.lock` records the checksum of every other file and of each function's source, for
 `verify()` to compare. Saving again rewrites only the files whose content changed. A new

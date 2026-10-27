@@ -1163,7 +1163,7 @@ def shout(text: str) -> str:
             [
                 (
                     "models entry 'vision-model' has key 'colour'; it takes model, accepts, produces and the "
-                    "parameters max_tokens, timeout_s, temperature, top_p, seed, reasoning_effort"
+                    "parameters max_tokens, timeout_s, temperature, top_p, seed, reasoning_effort, system_prompt"
                 )
             ],
             id="an unknown key in models",

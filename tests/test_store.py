@@ -25,8 +25,9 @@ from xmas.config import runs_path
 from xmas.errors import ErrorKind
 from xmas.health import Flag, Health
 from xmas.llms import APILLM
+from xmas.llms.meta import CallMeta
 from xmas.media import Ref
-from xmas.store import RunLog, Store, open_store
+from xmas.store import SCHEMA, RunLog, Store, open_store
 from xmas.trace import AgentRecord, Event, Rejected, TokenUsage, ToolCall, Trace
 
 from .conftest import BASE_URL, MockLLM, answer, deck
@@ -74,6 +75,8 @@ RECORD = AgentRecord(
     route=("ask",),
     inner=INNER,
     latency_s=0.5,
+    logprobs=(("d", -0.1), ("!", -2.5)),
+    response_id="cmpl-1",
 )
 PICTURE = Ref("/tmp/slide-1.png", "image/png", 3, "ab" * 32)
 HEALTH = Health(flags=(Flag("stuck", "writer", 0, "same answer twice"),))
@@ -454,10 +457,30 @@ def test_a_run_without_its_end_keeps_what_it_wrote(tmp_path: Path) -> None:
     log.record(replace(RECORD, agent="inner"), boxed=True)
     crashed = store.trace("r")
     assert crashed.records == (RECORD,)
+    assert crashed.records[0].logprobs == (("d", -0.1), ("!", -2.5)), "the pairs come back as tuples, not lists"
     assert crashed.status == "failed"
     assert crashed.query == "q"
     assert "no end in the store" in cast("str", crashed.error)
     assert crashed.graph_id == "sys"
+
+
+def test_a_store_made_before_the_call_columns_gets_them(tmp_path: Path) -> None:
+    old = SCHEMA.replace(",\n    response_id TEXT,\n    logprobs TEXT", "")
+    assert "logprobs" not in old
+    with sqlite3.connect(tmp_path / "runs.db") as conn:
+        conn.executescript(old)
+    assert "logprobs" not in {row[1] for row in table_info(tmp_path / "runs.db", "xmas_calls")}
+
+    store = Store(tmp_path / "runs.db")
+    store.begin("r", "sys", "q")
+    log = RunLog(store, "r")
+    meta = CallMeta(0.1, cost_usd=0.01, logprobs=(("d", -0.1),), response_id="cmpl-1", finish_reason="stop")
+    log.call("writer", MockLLM(), "2026-10-24T00:00:00+00:00", 0.1, meta)
+    log.call("writer", MockLLM(), "2026-10-24T00:00:01+00:00", 0.1, CallMeta(0.1))
+    (with_them, without) = store.calls("r")
+    assert (with_them["response_id"], with_them["logprobs"]) == ("cmpl-1", [["d", -0.1]])
+    assert (without["response_id"], without["logprobs"]) == (None, None)
+    assert Store(tmp_path / "runs.db").calls("r") == (with_them, without)  # opened again: the columns are there
 
 
 def test_no_secret_reaches_the_log(run_log_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:

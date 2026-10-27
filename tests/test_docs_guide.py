@@ -1460,7 +1460,7 @@ def test_the_bundle_block_runs_as_written(endpoint: MockLLM, capsys: pytest.Capt
     assert isinstance(editor, APILLM)
     assert (editor.model_id, editor.call_timeout_s) == ("llama-3.1-70b", 120)
     assert editor.call_params() == {"max_tokens": 2000, "temperature": 0.2}
-    assert "`" + "`, `".join(PARAMS).replace(", `reasoning_effort", " and\n`reasoning_effort") + "`" in BUNDLES
+    assert "`" + "`, `".join(PARAMS).replace(", `system_prompt", " and\n`system_prompt") + "`" in BUNDLES
     zipped = mas.save("team-zip.mas", zipped=True)
     assert zipped.is_file()
     assert MAS.load(zipped).describe()["id"] == mas.describe()["id"]

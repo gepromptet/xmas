@@ -62,6 +62,11 @@ class CallRecord:
         system_prompts: A batched call's system prompts, aligned to :attr:`prompts`.
         responses: A batched call's responses, aligned to :attr:`prompts`.
         response_ids: A batched call's completion ids, aligned to :attr:`prompts`.
+        logprobs: The chosen token and its log-probability per generated token of
+            a single-prompt call on xmas's own path (``generate_with_meta``, a tool
+            turn), when the request asked for logprobs (``logprobs: true`` in
+            ``call_kwargs``); ``None`` otherwise. Recorded whether or not text
+            capture is on.
     """
 
     operation: str
@@ -85,6 +90,7 @@ class CallRecord:
     system_prompts: list[str] | None = None
     responses: list[str] | None = None
     response_ids: list[str | None] | None = None
+    logprobs: tuple[tuple[str, float], ...] | None = None
 
     def exchanges(self) -> list[dict[str, str | None]]:
         """Return the captured text one prompt at a time, whatever the call's shape.

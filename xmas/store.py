@@ -7,7 +7,8 @@ filled through the same serializer calls, so either saver opens a file the
 other wrote. Beside them, a run writes as it goes (:class:`RunLog`): its row
 in ``xmas_runs`` when it starts and when it ends, one row in ``xmas_records``
 the moment each visit's record is kept, one in ``xmas_events`` per event and
-one in ``xmas_calls`` per model call; ``xmas_questions`` holds one row per
+one in ``xmas_calls`` per model call (its completion id and logprobs
+included); ``xmas_questions`` holds one row per
 question a run put to a person. Records, events and calls are only added, each
 in a transaction of its own, so a run that dies keeps what it wrote, and
 :meth:`Store.trace` rebuilds its trace.
@@ -191,15 +192,19 @@ CREATE TABLE IF NOT EXISTS xmas_calls (
     finish_reason TEXT,
     error_kind TEXT,
     error TEXT,
-    params TEXT
+    params TEXT,
+    response_id TEXT,
+    logprobs TEXT
 );
 CREATE INDEX IF NOT EXISTS xmas_calls_run ON xmas_calls (run_id);
 """
+ADDED_COLUMNS = (("xmas_calls", "response_id", "TEXT"), ("xmas_calls", "logprobs", "TEXT"))
+"""Columns added to a table after its first release, given to a file that predates them."""
 LOGGED = ("xmas_records", "xmas_events", "xmas_calls")
 RUN_COLUMNS = "run_id, system_id, status, created_at, updated_at, paused, totals, ended_at"
 CALL_COLUMNS = (
     "call_id", "run_id", "node", "ts", "model", "served_model", "tokens", "cost_usd", "latency_s", "finish_reason",
-    "error_kind", "error", "params",
+    "error_kind", "error", "params", "response_id", "logprobs",
 )  # fmt: skip
 SECRET = re.compile(r"(^|_)(key|secret|token|password|credentials?)$|auth|header", re.IGNORECASE)
 """The call parameters a call row leaves out: keys, tokens, passwords and headers."""
@@ -227,7 +232,8 @@ def tuples(value: Any) -> Any:
             item = getattr(value, field.name)
             fixed = tuples(item)
             if isinstance(fixed, list) and str(field.type).startswith("tuple["):
-                fixed = tuple(fixed)
+                nested = str(field.type).startswith("tuple[tuple[")
+                fixed = tuple(tuple(entry) if nested and isinstance(entry, list) else entry for entry in fixed)
             if fixed is not item:
                 changes[field.name] = fixed
         return replace(value, **changes) if changes else value
@@ -313,6 +319,10 @@ class Store(BaseCheckpointSaver[str]):
         self.conn = sqlite3.connect(self.path or ":memory:", check_same_thread=False)
         self.lock = threading.Lock()
         self.conn.executescript(SCHEMA)
+        for table, column, kind in ADDED_COLUMNS:  # a file made before the column was added gets it
+            present = {row[1] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+            if column not in present:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> list[Any]:
         """Run one statement in its own transaction and return its rows."""
@@ -561,13 +571,18 @@ class Store(BaseCheckpointSaver[str]):
         return tuple(Event(*row) for row in rows)
 
     def calls(self, run_id: str) -> tuple[dict[str, Any], ...]:
-        """Return a run's model calls in the order they ended: each row by column, ``tokens`` and ``params`` read."""
+        """Return a run's model calls in the order they ended: each row by column, with its JSON columns read.
+
+        ``logprobs`` is a list of ``[token, logprob]`` pairs when the call's
+        request asked for logprobs, else ``None``.
+        """
         rows = self.execute(
             f"SELECT {', '.join(CALL_COLUMNS)} FROM xmas_calls WHERE run_id = ? ORDER BY rowid", (run_id,)
         )
         calls = [dict(zip(CALL_COLUMNS, row, strict=True)) for row in rows]
         for call in calls:
-            call["tokens"], call["params"] = loads(call["tokens"]), loads(call["params"])
+            for column in ("tokens", "params", "logprobs"):
+                call[column] = loads(call[column])
         return tuple(calls)
 
     def own_records(self, run_id: str, before: int | None = None) -> dict[int, AgentRecord]:
@@ -783,7 +798,8 @@ class RunLog:
         """Write one model call as it ended: who made it, on which model, what it used, how it ended.
 
         Its parameters are the model's ``call_params()``, when it has them,
-        without any key, token, password or header.
+        without any key, token, password or header. The completion's id and
+        its logprobs are the meta's.
         """
         params = getattr(llm, "call_params", None)
         sent = {key: value for key, value in params().items() if not SECRET.search(key)} if callable(params) else None
@@ -806,6 +822,8 @@ class RunLog:
                 None if kind is None else kind.value,
                 None if error is None else f"{type(error).__name__}: {error}",
                 None if sent is None else json.dumps(sent, default=str),
+                None if meta is None else meta.response_id,
+                None if meta is None or meta.logprobs is None else json.dumps([list(pair) for pair in meta.logprobs]),
             ),
         )
 

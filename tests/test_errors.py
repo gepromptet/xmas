@@ -119,6 +119,9 @@ NEWER_RECORD_FIELDS: dict[str, Any] = {
     "finish_reason": "length",
     "error_kind": ErrorKind.LENGTH_CUT,
     "served_model": "vendor/model-1",
+    "logprobs": (("4", -0.1),),
+    "response_id": "cmpl-1",
+    "system_prompt": "Be brief.",
 }
 
 
@@ -133,6 +136,7 @@ def test_trace_dicts_keep_v1_keys_and_add_only_set_fields() -> None:
     assert list(full) == V1_RECORD_KEYS + list(NEWER_RECORD_FIELDS)
     assert type(full["error_kind"]) is str
     assert full["error_kind"] == "length_cut"
+    assert full["logprobs"] == [["4", -0.1]]
     assert full["tokens"] == {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "cached_tokens": 4}
     assert (TokenUsage(1, 2, reasoning_tokens=1) + TokenUsage(3, 4)).to_dict()["reasoning_tokens"] == 1
     assert list((TokenUsage(1, 2) + TokenUsage(3, 4)).to_dict()) == ["input_tokens", "output_tokens", "total_tokens"]

@@ -842,7 +842,14 @@ def test_models_entries_and_the_overlay(tmp_path: Path, clean_env: pytest.Monkey
     path = deck().save(tmp_path / "deck.mas")
     wiring = yaml.safe_load((path / "xmas.yaml").read_text(encoding="utf-8"))
     models = {
-        "judge-model": {"model": "judge-x", "max_tokens": 900, "timeout_s": 30, "temperature": 0.2, "seed": 7},
+        "judge-model": {
+            "model": "judge-x",
+            "max_tokens": 900,
+            "timeout_s": 30,
+            "temperature": 0.2,
+            "seed": 7,
+            "system_prompt": "Judge.",
+        },
         "writer-model": {"reasoning_effort": "low"},
         "editor": {"model": "judge-x", "accepts": ["image"], "top_p": 0.9},
     }
@@ -861,13 +868,27 @@ def test_models_entries_and_the_overlay(tmp_path: Path, clean_env: pytest.Monkey
     assert (judge.model_id, judge.call_timeout_s, judge.call_params()) == (
         "judge-x",
         30,
-        {"max_tokens": 900, "temperature": 0.2, "seed": 7},
+        {"max_tokens": 900, "temperature": 0.2, "seed": 7, "system_prompt": "Judge."},
     )
+    assert judge.system_prompt == "Judge."
     assert writer.call_params() == {"max_tokens": 4096, "reasoning_effort": "low"}
+    assert writer.system_prompt == "You are a helpful assistant."  # promptolution's default
     assert (mas.agents["noter"].model, editor.model_id, editor.accepts) == ("editor", "judge-x", ("image",))
-    assert mas.models["judge-model"] == ModelEntry(
-        model="judge-x", params=(("max_tokens", 900), ("timeout_s", 30), ("temperature", 0.2), ("seed", 7))
+    judged = ModelEntry(
+        model="judge-x",
+        params=(("max_tokens", 900), ("timeout_s", 30), ("temperature", 0.2), ("seed", 7), ("system_prompt", "Judge.")),
     )
+    assert mas.models["judge-model"] == judged
+    # temperature, seed and the system prompt are the constructor's own keywords; top_p and reasoning_effort travel
+    # as call_kwargs
+    assert judged.llm_kwargs() == {
+        "max_tokens": 900,
+        "call_timeout_s": 30,
+        "temperature": 0.2,
+        "seed": 7,
+        "system_prompt": "Judge.",
+    }
+    assert ModelEntry(params=(("top_p", 0.9), ("seed", 7))).llm_kwargs() == {"seed": 7, "call_kwargs": {"top_p": 0.9}}
     assert mas.to_dict()["models"] == models
     assert ModelEntry.parse({"accepts": ["image"]}, "x") == Capabilities(accepts=("image",))
 
@@ -877,6 +898,7 @@ def test_models_entries_and_the_overlay(tmp_path: Path, clean_env: pytest.Monkey
         ({"max_tokens": 1.5}, "max_tokens is a whole number, not 1.5"),
         ({"seed": True}, "seed is a whole number, not True"),
         ({"reasoning_effort": 2}, "reasoning_effort is a text, not 2"),
+        ({"system_prompt": 2}, "system_prompt is a text, not 2"),
     ):
         write({"judge-model": entry})
         with pytest.raises(ValueError, match=re.escape(f"models entry 'judge-model' {message}"[:60])):

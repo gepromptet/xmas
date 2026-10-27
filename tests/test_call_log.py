@@ -269,6 +269,36 @@ def test_the_default_system_prompt_is_recorded_as_sent() -> None:
     (record,) = log.records
     assert record.system_prompt == sent[0]["messages"][0]["content"]
     assert record.system_prompt
+    assert record.params == {"max_tokens": 4096}, "the default system prompt is not a parameter"
+
+
+def test_the_models_own_system_prompt_seed_and_temperature_are_sent_and_recorded() -> None:
+    """``APILLM(seed=, temperature=, system_prompt=)`` reach every request, and the record says so."""
+    log = CallLog(capture_text=True)
+    sent: list[dict[str, Any]] = []
+    llm = chat_llm(log, sent, seed=7, temperature=0.0, system_prompt="Be terse.")
+
+    llm.get_response("hello")
+    llm.get_response(["a", "b"], "Be long.")
+
+    first, batch_a, batch_b = sent
+    assert first["messages"][0] == {"role": "system", "content": "Be terse."}
+    assert (first["seed"], first["temperature"]) == (7, 0.0)
+    assert [request["messages"][0]["content"] for request in (batch_a, batch_b)] == ["Be long."] * 2
+    one, batch = log.records
+    assert one.system_prompt == "Be terse."
+    assert one.params == {"max_tokens": 4096, "seed": 7, "temperature": 0.0, "system_prompt": "Be terse."}
+    assert batch.system_prompts == ["Be long."] * 2
+    assert batch.params == one.params, "params are the model's; the batch's own system prompts are in system_prompts"
+    assert [row["params"]["seed"] for row in (json.loads(json.dumps(r.to_dict())) for r in log.records)] == [7, 7]
+
+
+def test_a_record_carries_logprobs_when_the_call_had_them() -> None:
+    record = CallRecord("generate", "m", "gateway", latency_s=1.0, logprobs=(("4", -0.1),), response_id="cmpl-1")
+
+    assert record.to_dict()["logprobs"] == (("4", -0.1),)
+    assert json.loads(json.dumps(record.to_dict()))["logprobs"] == [["4", -0.1]]
+    assert CallRecord("generate", "m", "gateway", latency_s=1.0).logprobs is None
 
 
 def test_a_captured_batch_is_one_record_with_aligned_lists() -> None:

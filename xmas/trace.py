@@ -148,6 +148,15 @@ class AgentRecord:
         finish_reason: Why the model stopped, as the provider said.
         error_kind: The kind of a cut or refused answer that still produced text.
         served_model: The model the provider says served the call.
+        logprobs: The chosen token and its log-probability per generated
+            token, when the model's request asked for logprobs; ``None``
+            otherwise, and for a visit without a model call. A visit of
+            several calls (a tool agent, a retried form) keeps the last
+            call's; the run store's call log has every call's.
+        response_id: The provider's id of the visit's last completion, or
+            ``None`` when the visit made no call or the provider sent none.
+        system_prompt: The system prompt the visit's calls were sent, when it
+            is not promptolution's default; ``None`` for the default.
         kind: What kind of node ran: ``"agent"``, ``"step"`` for a step,
             ``"box"`` for a box, or ``"human"`` for a human node, whose
             ``raw_response`` is its answer's JSON.
@@ -186,6 +195,9 @@ class AgentRecord:
     finish_reason: str | None = None
     error_kind: ErrorKind | None = None
     served_model: str | None = None
+    logprobs: tuple[tuple[str, float], ...] | None = None
+    response_id: str | None = None
+    system_prompt: str | None = None
     kind: str = "agent"
     rejected: tuple[Rejected, ...] = ()
     error: str | None = None
@@ -204,7 +216,7 @@ class AgentRecord:
 
         ``kind`` is set when it is not ``"agent"``, ``rejected`` when it is not
         empty, ``capped`` and ``lost`` when they are true and ``retries`` when
-        it is not 0.
+        it is not 0. ``logprobs`` is a list of ``[token, logprob]`` pairs.
         """
         data: dict[str, Any] = {
             "agent": self.agent,
@@ -225,6 +237,9 @@ class AgentRecord:
             "finish_reason": self.finish_reason,
             "error_kind": None if self.error_kind is None else self.error_kind.value,
             "served_model": self.served_model,
+            "logprobs": None if self.logprobs is None else [[token, logprob] for token, logprob in self.logprobs],
+            "response_id": self.response_id,
+            "system_prompt": self.system_prompt,
             "kind": None if self.kind == "agent" else self.kind,
             "rejected": [rejected.to_dict() for rejected in self.rejected] or None,
             "error": self.error,

@@ -24,7 +24,7 @@ from promptolution.utils.templates import DEFAULT_SYS_PROMPT
 from xmas.budget import SLICE_S, CancelFlag, cancel_flag
 from xmas.errors import MONEY_WORDS, EmptyResponse, ErrorKind, XmasError
 from xmas.llms.call_log import CallLog, CallRecord
-from xmas.llms.meta import CallMeta, TokenPrice, cut_meta, meta_from_completion
+from xmas.llms.meta import CallMeta, TokenPrice, cut_meta, meta_from_completion, system_prompt_sent
 from xmas.llms.parts import Part, prompt_messages, record_text
 from xmas.llms.scoring import ScoredSequence
 from xmas.media import Capabilities
@@ -90,7 +90,8 @@ class APILLM(promptolution.APILLM):
     :meth:`get_response` is promptolution's batching, concurrency and retries,
     timed and logged. :meth:`generate_with_meta` sends the same request and
     keeps what the provider reported (tokens, cost, finish reason, served
-    model) as a :class:`~xmas.llms.meta.CallMeta`;
+    model, completion id, and the chosen tokens' logprobs when ``call_kwargs``
+    asked for them) as a :class:`~xmas.llms.meta.CallMeta`;
     :meth:`get_tool_response_meta` does the same for a tool turn,
     :meth:`generate_parts_with_meta` for a prompt with pictures or sound in it,
     and :meth:`generate_image_with_meta` for an answer with images. Each sends a
@@ -115,6 +116,9 @@ class APILLM(promptolution.APILLM):
             ``"image"`` or ``"audio"`` for a model that sees or hears.
         produces: The kinds the model answers with, as stated: ``"text"``, and
             ``"image"`` for a model that draws.
+        system_prompt: The system prompt every call of this model is sent
+            when its caller names none: the one given, else promptolution's
+            ``DEFAULT_SYS_PROMPT``.
     """
 
     def __init__(  # noqa: PLR0913, PLR0917  the public constructor, kept for version 1 callers
@@ -129,6 +133,9 @@ class APILLM(promptolution.APILLM):
         accepts: Sequence[str] = ("text",),
         produces: Sequence[str] = ("text",),
         stream: bool = False,  # noqa: FBT001, FBT002  public positional parameter of the constructor
+        seed: int | None = None,
+        temperature: float | None = None,
+        system_prompt: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the model.
@@ -153,6 +160,14 @@ class APILLM(promptolution.APILLM):
                 {"include_usage": true}`` to each request and builds the
                 answer from its chunks, so a cut call keeps its text so far;
                 ``False`` sends promptolution's request unchanged.
+            seed: Sent as ``seed`` on every request when set. It is merged into
+                ``call_kwargs`` ahead of the given entries, so a ``seed`` in
+                ``call_kwargs`` wins; both land in a record's ``params``.
+            temperature: Sent as ``temperature`` on every request when set,
+                merged as ``seed`` is.
+            system_prompt: The system prompt sent on every call whose caller
+                names none, in place of promptolution's ``DEFAULT_SYS_PROMPT``.
+                A call's record and the agent's record keep the one sent.
             **kwargs: Forwarded to promptolution's ``APILLM``.
 
         Raises:
@@ -171,6 +186,10 @@ class APILLM(promptolution.APILLM):
         self.stream = stream
         stated = Capabilities.parse({"accepts": accepts, "produces": produces}, "APILLM")
         self.accepts, self.produces = stated.accepts, stated.produces
+        self.system_prompt: str = DEFAULT_SYS_PROMPT if system_prompt is None else system_prompt
+        sampling = {key: value for key, value in (("seed", seed), ("temperature", temperature)) if value is not None}
+        if sampling:
+            kwargs["call_kwargs"] = {**sampling, **(kwargs.get("call_kwargs") or {})}
         api_key = api_key or os.environ.get("XMAS_API_KEY")
         super().__init__(model_id=model, api_url=base_url.rstrip("/"), api_key=api_key, **kwargs)
 
@@ -202,6 +221,7 @@ class APILLM(promptolution.APILLM):
         """Record an answered ``generate`` call with the provider's token counts, else ``estimate``; return them."""
         tokens = estimate if meta.tokens is None else meta.tokens
         fields.setdefault("params", self.call_params())
+        fields.setdefault("logprobs", meta.logprobs)
         self.log_call(
             "generate",
             started,
@@ -212,14 +232,22 @@ class APILLM(promptolution.APILLM):
         )
         return tokens
 
-    def call_params(self) -> dict[str, Any]:
-        """Return what a generation is sent besides the messages, merged as promptolution merges it."""
+    def call_params(self, system_prompt: str | None = None) -> dict[str, Any]:
+        """Return what a generation is sent besides the messages, merged as promptolution merges it.
+
+        ``system_prompt`` is the one sent, the model's own when ``None``; it
+        is a ``system_prompt`` entry only when it is not promptolution's
+        default, so a default model's params read as before.
+        """
         params: dict[str, Any] = {"max_tokens": self.max_tokens}
         params.update(self._call_kwargs)
         # Headers can carry credentials, so they never reach a record.
         params.pop("extra_headers", None)
         if self.stream:
             params.update(STREAM)
+        sent = self.system_prompt if system_prompt is None else system_prompt
+        if sent != DEFAULT_SYS_PROMPT:
+            params["system_prompt"] = sent
         return params
 
     async def _ainvoke_once(self, prompt: str, system_prompt: str) -> ChatCompletion:
@@ -246,8 +274,11 @@ class APILLM(promptolution.APILLM):
         """Generate through promptolution, timing the call and recording what it cost.
 
         Token counts are promptolution's whitespace-word approximation. A batch
-        is one call and stays one record.
+        is one call and stays one record. Without ``system_prompts`` each
+        prompt is sent the model's :attr:`system_prompt`.
         """
+        if system_prompts is None:
+            system_prompts = self.system_prompt
         n_prompts = 1 if isinstance(prompts, str) else len(prompts)
         params = self.call_params()
         before = self.get_token_count()
@@ -291,13 +322,13 @@ class APILLM(promptolution.APILLM):
         """Return a generation record's id fields, and its text when the collector asked for it.
 
         Singular fields for a one-prompt call, list fields for a batch; the
-        system prompts are resolved as promptolution resolves them.
+        system prompts are resolved as :meth:`get_response` resolves them.
         """
         prompt_list = [prompts] if isinstance(prompts, str) else list(prompts)
         known_ids = response_ids if response_ids and any(i is not None for i in response_ids) else None
         capture = self.call_log is not None and self.call_log.capture_text
         if system_prompts is None:
-            system_prompts = DEFAULT_SYS_PROMPT
+            system_prompts = self.system_prompt
         system_list = [system_prompts] * len(prompt_list) if isinstance(system_prompts, str) else list(system_prompts)
 
         if len(prompt_list) == 1:
@@ -327,9 +358,11 @@ class APILLM(promptolution.APILLM):
         """Run one chat turn that may request tools, and keep its metadata.
 
         The request carries ``model``, ``messages``, ``max_tokens`` and the
-        tools; sampling parameters are sent only when set in ``call_kwargs``,
-        so a route that refuses them still serves the call. Empty ``tools``
-        omits the key, which forces a text answer.
+        tools; sampling parameters are sent only when set on the model
+        (``seed``, ``temperature``) or in ``call_kwargs``, so a route that
+        refuses them still serves the call. Empty ``tools`` omits the key,
+        which forces a text answer. The system prompt is the caller's, the
+        first of ``messages``.
 
         Returns:
             The message text (``""`` when the model only called tools), the
@@ -342,12 +375,13 @@ class APILLM(promptolution.APILLM):
         request = self.build_request(messages)
         if tools:
             request["tools"] = [spec.to_openai() for spec in tools]
+        params = self.call_params(system_prompt_sent(messages) or DEFAULT_SYS_PROMPT)
         started_at = timestamp()
         started = time.perf_counter()
         try:
             completion, meta = self.ask_until_answered(request, "tool turn", tool_turn=True)
         except Exception as error:
-            self.log_call("generate", started, started_at, error=error, params=self.call_params())
+            self.log_call("generate", started, started_at, error=error, params=params)
             raise
         message = completion.choices[0].message
         text = message.content or ""
@@ -357,16 +391,17 @@ class APILLM(promptolution.APILLM):
             if call.type == "function"
         ]
         estimate = turn_usage(approximate_tokens, messages, text, requests)
-        tokens = self.log_answer(started, started_at, meta, estimate, response_id=completion.id)
+        tokens = self.log_answer(started, started_at, meta, estimate, params=params, response_id=completion.id)
         self.input_token_count += tokens.input_tokens
         self.output_token_count += tokens.output_tokens
         return text, requests, meta
 
-    def generate_with_meta(self, prompt: str, system_prompt: str = DEFAULT_SYS_PROMPT) -> tuple[str, CallMeta]:
+    def generate_with_meta(self, prompt: str, system_prompt: str | None = None) -> tuple[str, CallMeta]:
         """Answer one prompt with promptolution's own request, and keep its metadata.
 
         One ``generate`` record per call, failed or not, whatever its attempts;
-        the token counters move as after :meth:`get_response`.
+        the token counters move as after :meth:`get_response`. Without a
+        ``system_prompt`` the model's own (:attr:`system_prompt`) is sent.
 
         Raises:
             EmptyResponse: If the answer has no content: at once, with kind
@@ -377,9 +412,7 @@ class APILLM(promptolution.APILLM):
         _, text, meta = self.send_generation(prompt, system_prompt)
         return text, meta
 
-    def generate_parts_with_meta(
-        self, parts: Sequence[Part], system_prompt: str = DEFAULT_SYS_PROMPT
-    ) -> tuple[str, CallMeta]:
+    def generate_parts_with_meta(self, parts: Sequence[Part], system_prompt: str | None = None) -> tuple[str, CallMeta]:
         """Answer a prompt of text and media parts, as :meth:`generate_with_meta` answers text.
 
         The request has the same keys (``model``, ``messages``, ``max_tokens``,
@@ -396,7 +429,7 @@ class APILLM(promptolution.APILLM):
         return text, meta
 
     def generate_image_with_meta(
-        self, prompt: str | Sequence[Part], system_prompt: str = DEFAULT_SYS_PROMPT
+        self, prompt: str | Sequence[Part], system_prompt: str | None = None
     ) -> tuple[str, list[tuple[bytes, str]], CallMeta]:
         """Ask for an answer with images, and keep its metadata.
 
@@ -430,13 +463,18 @@ class APILLM(promptolution.APILLM):
         return request
 
     def send_generation(
-        self, prompt: str | Sequence[Part], system_prompt: str, **extra: Any
+        self, prompt: str | Sequence[Part], system_prompt: str | None, **extra: Any
     ) -> tuple[ChatCompletion, str, CallMeta]:
-        """Send one generation with ``extra`` request keys, record it, and move the token counters by its text."""
+        """Send one generation with ``extra`` request keys, record it, and move the token counters by its text.
+
+        ``system_prompt`` is the caller's, the model's own when ``None``.
+        """
+        if system_prompt is None:
+            system_prompt = self.system_prompt
         request = self.build_request(prompt_messages(prompt, system_prompt), **extra)
         shown = prompt if isinstance(prompt, str) else record_text(prompt)
         counted = prompt if isinstance(prompt, str) else "".join(part for part in prompt if isinstance(part, str))
-        logged = {"params": self.call_params()}
+        logged = {"params": self.call_params(system_prompt)}
         for key, value in extra.items():
             logged["params"].setdefault(key, value)
         started_at = timestamp()
@@ -465,8 +503,11 @@ class APILLM(promptolution.APILLM):
         that was cut or refused raises at once, since the same request would
         only repeat it. Inside a metered call the waits end once the call's
         :func:`~xmas.budget.cancel_flag` is set (:meth:`wait_for_attempt`).
+        The meta keeps the system prompt the request sent, when it is not
+        promptolution's default.
         """
         paid: CallMeta | None = None
+        sent = system_prompt_sent(request.get("messages") or [])
         flag = cancel_flag()
         for attempt in range(self.max_retries + 1):
             progress = Progress()
@@ -476,7 +517,7 @@ class APILLM(promptolution.APILLM):
             finally:
                 current_progress.reset(token)
             completion = self.wait_for_attempt(future, what, flag, progress, paid)
-            meta = meta_from_completion(completion, time.perf_counter() - progress.started, self.price)
+            meta = meta_from_completion(completion, time.perf_counter() - progress.started, self.price, sent)
             paid = meta if paid is None else paid.combine(meta)
             if completion.choices:
                 message = completion.choices[0].message

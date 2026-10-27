@@ -2,9 +2,10 @@
 
 promptolution keeps only a completion's text; a :class:`CallMeta` keeps the
 provider's token counts, the reported (or priced) cost, the finish reason, a
-refusal flag and the served model, for the agent's :class:`~xmas.trace.AgentRecord`.
-A cost that is not known is ``None``, never ``0``: a budget can only bind on a
-number it can trust.
+refusal flag, the served model, the completion's id, its chosen-token logprobs
+when the request asked for them, and the system prompt it was sent, for the
+agent's :class:`~xmas.trace.AgentRecord`. A cost that is not known is ``None``,
+never ``0``: a budget can only bind on a number it can trust.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from xmas.errors import ErrorKind, kind_of_finish
 from xmas.trace import TokenUsage
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from openai.types.chat import ChatCompletion
     from openai.types.completion_usage import CompletionUsage
@@ -28,16 +29,23 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CallMeta",
+    "Logprobs",
     "SupportsImages",
     "SupportsMeta",
     "SupportsParts",
     "TokenPrice",
+    "chosen_logprobs",
     "cut_meta",
     "meta_from_completion",
     "supports_images",
     "supports_meta",
     "supports_parts",
+    "system_prompt_of",
+    "system_prompt_sent",
 ]
+
+Logprobs = tuple[tuple[str, float], ...]
+"""The chosen token and its log-probability, per generated token."""
 
 
 @dataclass(frozen=True)
@@ -82,6 +90,12 @@ class CallMeta:
         refused: Whether the model refused to answer.
         served_model: The model the provider says served the call, which can
             differ from the name that was asked for.
+        logprobs: The chosen token and its log-probability per generated
+            token (``choices[0].logprobs.content``), when the request asked
+            for logprobs; ``None`` when it did not or the provider sent none.
+        response_id: The provider's completion id, or ``None`` when it sent none.
+        system_prompt: The system prompt the call was sent, when it is not
+            promptolution's default; ``None`` for the default.
     """
 
     latency_s: float
@@ -90,6 +104,9 @@ class CallMeta:
     finish_reason: str | None = None
     refused: bool = False
     served_model: str | None = None
+    logprobs: Logprobs | None = None
+    response_id: str | None = None
+    system_prompt: str | None = None
 
     @property
     def error_kind(self) -> ErrorKind | None:
@@ -101,8 +118,8 @@ class CallMeta:
 
         Latency, tokens and cost are summed. An unknown count or cost on either
         side makes the sum unknown, because a partial sum would understate what
-        was paid. How the pair ended (finish reason, refusal, served model) is
-        ``other``'s, the later call.
+        was paid. How the pair ended (finish reason, refusal, served model,
+        logprobs, completion id, system prompt) is ``other``'s, the later call.
         """
         tokens = None if self.tokens is None or other.tokens is None else self.tokens + other.tokens
         cost = None if self.cost_usd is None or other.cost_usd is None else self.cost_usd + other.cost_usd
@@ -113,6 +130,9 @@ class CallMeta:
             finish_reason=other.finish_reason,
             refused=other.refused,
             served_model=other.served_model,
+            logprobs=other.logprobs,
+            response_id=other.response_id,
+            system_prompt=other.system_prompt,
         )
 
     def record_fields(self) -> dict[str, Any]:
@@ -127,6 +147,9 @@ class CallMeta:
             "finish_reason": self.finish_reason,
             "error_kind": self.error_kind,
             "served_model": self.served_model,
+            "logprobs": self.logprobs,
+            "response_id": self.response_id,
+            "system_prompt": self.system_prompt,
         }
 
 
@@ -192,8 +215,10 @@ def supports_images(llm: object) -> bool:
     return isinstance(llm, SupportsImages) and llm.full_response is True
 
 
-def meta_from_completion(completion: ChatCompletion, latency_s: float, price: TokenPrice | None) -> CallMeta:
-    """Read a chat completion's metadata.
+def meta_from_completion(
+    completion: ChatCompletion, latency_s: float, price: TokenPrice | None, system_prompt: str | None = None
+) -> CallMeta:
+    """Read a chat completion's metadata; ``system_prompt`` is what the request sent, as :func:`system_prompt_sent`.
 
     The cost is the first that is known of: ``usage.cost`` as the provider sent
     it, a top-level ``cost`` field some proxies add, the tokens priced at
@@ -218,7 +243,45 @@ def meta_from_completion(completion: ChatCompletion, latency_s: float, price: To
         finish_reason=finish,
         refused=refused,
         served_model=completion.model or None,
+        logprobs=chosen_logprobs(completion),
+        response_id=completion.id or None,
+        system_prompt=system_prompt,
     )
+
+
+def chosen_logprobs(completion: ChatCompletion) -> Logprobs | None:
+    """Return the first choice's ``logprobs.content`` as ``(token, logprob)`` pairs, or ``None`` when there is none.
+
+    A provider sends them only when the request asked (``logprobs: true``);
+    the client does not validate responses, so an entry without a token or a
+    number is read as none sent.
+    """
+    choice = completion.choices[0] if completion.choices else None
+    content = None if choice is None or choice.logprobs is None else choice.logprobs.content
+    if content is None:
+        return None
+    pairs = []
+    for entry in content:
+        token, logprob = getattr(entry, "token", None), getattr(entry, "logprob", None)
+        if not isinstance(token, str) or isinstance(logprob, bool) or not isinstance(logprob, int | float):
+            return None
+        pairs.append((token, float(logprob)))
+    return tuple(pairs)
+
+
+def system_prompt_sent(messages: Sequence[Mapping[str, Any]]) -> str | None:
+    """Return the system prompt ``messages`` open with, when it is not promptolution's default; else ``None``."""
+    first = messages[0] if messages else None
+    if first is None or first.get("role") != "system":
+        return None
+    content = first.get("content")
+    return None if not isinstance(content, str) or content == DEFAULT_SYS_PROMPT else content
+
+
+def system_prompt_of(llm: object) -> str:
+    """Return the system prompt ``llm`` sends when a caller names none: its ``system_prompt``, else promptolution's."""
+    stated = getattr(llm, "system_prompt", None)
+    return stated if isinstance(stated, str) else DEFAULT_SYS_PROMPT
 
 
 def cut_meta(

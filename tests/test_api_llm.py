@@ -19,7 +19,7 @@ from xmas.budget import RunMeter
 from xmas.errors import EmptyResponse, ErrorKind, XmasError
 from xmas.llms.api_llm import APILLM
 from xmas.llms.call_log import CallLog
-from xmas.llms.meta import TokenPrice, supports_images, supports_meta, supports_parts
+from xmas.llms.meta import CallMeta, TokenPrice, supports_images, supports_meta, supports_parts
 from xmas.llms.parts import Part, content_text, has_media, marker, render_parts, to_content
 from xmas.media import MAX_PART_BYTES, Ref
 from xmas.prompts import safe_format
@@ -27,6 +27,9 @@ from xmas.tools import ToolCallRequest, index_tools, run_tool_loop
 from xmas.utils import approximate_tokens
 
 from .conftest import BASE_URL, add, answer, recording_llm, requires_gateway
+
+DEFAULT_SYSTEM = "You are a helpful assistant."
+"""promptolution's DEFAULT_SYS_PROMPT, spelled out: the one a default APILLM sends."""
 
 
 def build_llm() -> APILLM:
@@ -273,9 +276,13 @@ def test_full_response_keeps_usage_cost_and_finish(monkeypatch: pytest.MonkeyPat
         "finish_reason": "stop",
         "error_kind": None,
         "served_model": "vendor/m-0613",
+        "logprobs": None,
+        "response_id": "x",
+        "system_prompt": None,
     }
     record = AgentRecord("a", 0, "p", "p", {}, {}, **fields)
     assert (record.cost_usd, record.tokens, record.served_model) == (0.0123, RICH, "vendor/m-0613")
+    assert (record.logprobs, record.response_id, record.system_prompt) == (None, "x", None)
     assert llm.get_token_count() == {
         "input_tokens": 1 + 5,
         "output_tokens": 1,
@@ -606,3 +613,188 @@ def test_a_hooked_subclass_cannot_send_parts(monkeypatch: pytest.MonkeyPatch, tm
     llm, sent = recording_llm(monkeypatch, [answer("done")])
     run_tool_loop(llm, ["Check ", "this"], index_tools([add]), 2, "System.", approximate_tokens, RunMeter())
     assert sent[0]["messages"][1] == {"role": "user", "content": "Check this"}
+
+
+# ------------------------------------- logprobs, completion ids, sampling and the system prompt
+
+PAIRS: list[tuple[str, float]] = [("4", -0.1), ("!", -2.5)]
+"""The chosen tokens of an answer and their logprobs, as a request with ``logprobs: true`` gets them."""
+
+
+def scored(content: str | None, pairs: list[tuple[str, float]], **kwargs: Any) -> ChatCompletion:
+    """A chat completion whose first choice carries ``pairs`` in ``logprobs.content``."""
+    body = answer(content, **kwargs).model_dump()
+    body["choices"][0]["logprobs"] = {
+        "content": [
+            {"token": token, "logprob": logprob, "bytes": None, "top_logprobs": []} for token, logprob in pairs
+        ],
+        "refusal": None,
+    }
+    return ChatCompletion.model_validate(body)
+
+
+def record_of(meta: CallMeta) -> AgentRecord:
+    """A record filled from ``meta``, as the engine fills one."""
+    return AgentRecord("a", 0, "p", "p", {}, {}, **meta.record_fields())
+
+
+def test_logprobs_and_the_completion_id_reach_the_meta_the_record_and_the_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    # a request that asks for logprobs (call_kwargs, as before) gets them on the meta, the record and the call log
+    log = CallLog()
+    asked = {"logprobs": True, "top_logprobs": 1}
+    llm, sent = recording_llm(monkeypatch, [scored("4!", PAIRS, id="cmpl-7")], call_kwargs=asked, call_log=log)
+    text, meta = llm.generate_with_meta("2+2")
+    assert (text, sent[0]["logprobs"], sent[0]["top_logprobs"]) == ("4!", True, 1)
+    assert (meta.logprobs, meta.response_id) == ((("4", -0.1), ("!", -2.5)), "cmpl-7")
+    record = record_of(meta)
+    assert (record.logprobs, record.response_id) == ((("4", -0.1), ("!", -2.5)), "cmpl-7")
+    assert record.to_dict()["logprobs"] == [["4", -0.1], ["!", -2.5]]
+    assert record.to_dict()["response_id"] == "cmpl-7"
+    (logged,) = log.records
+    assert (logged.logprobs, logged.response_id) == ((("4", -0.1), ("!", -2.5)), "cmpl-7")
+    assert json.loads(json.dumps(logged.to_dict()))["logprobs"] == [["4", -0.1], ["!", -2.5]]
+
+    # a tool turn keeps them the same way; a completion without logprobs has None, and the request is not changed
+    llm, sent = recording_llm(monkeypatch, [scored("", PAIRS, calls=[ADD_CALL], id="cmpl-8")], call_log=log)
+    _, _, turn_meta = llm.get_tool_response_meta([{"role": "user", "content": "add"}], [add])
+    assert (turn_meta.logprobs, turn_meta.response_id, log.records[-1].logprobs) == (
+        (("4", -0.1), ("!", -2.5)),
+        "cmpl-8",
+        (("4", -0.1), ("!", -2.5)),
+    )
+    llm, sent = recording_llm(monkeypatch, [answer("4", id="cmpl-9")], call_log=log)
+    _, meta = llm.generate_with_meta("2+2")
+    assert "logprobs" not in sent[0]
+    assert (meta.logprobs, meta.response_id, log.records[-1].logprobs) == (None, "cmpl-9", None)
+    assert "logprobs" not in record_of(meta).to_dict()
+    assert record_of(meta).to_dict()["response_id"] == "cmpl-9"
+    # an id the provider left empty is None, as a missing served model is
+    _, meta = recording_llm(monkeypatch, [answer("4", id="")])[0].generate_with_meta("2+2")
+    assert meta.response_id is None
+
+    # two calls combined keep the later call's logprobs and id, and sum the rest as before
+    first = scored("a", [("a", -0.5)], id="cmpl-a", usage=USAGE)
+    second = scored("b", [("b", -0.25)], id="cmpl-b", usage=USAGE)
+    llm, _ = recording_llm(monkeypatch, [first, second])
+    combined = llm.generate_with_meta("x")[1].combine(llm.generate_with_meta("y")[1])
+    assert (combined.logprobs, combined.response_id, combined.tokens) == (((("b", -0.25),)), "cmpl-b", RICH + RICH)
+
+
+def test_a_visit_of_several_calls_keeps_the_last_logprobs_and_the_store_every_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    turns = [scored("", [("a", -0.5)], calls=[ADD_CALL], id="cmpl-a"), scored("42", [("b", -0.25)], id="cmpl-b")]
+    llm, _ = recording_llm(monkeypatch, turns, call_kwargs={"logprobs": True})
+    coder = Agent("coder", "Do {query}", output="answer", tools=["add"])
+    mas = MAS([coder], llm=llm, tools=[add], version=2)
+    trace = mas.run("q")
+    assert trace.error is None
+    (record,) = trace.records
+    assert (record.logprobs, record.response_id) == ((("b", -0.25),), "cmpl-b")
+    calls = mas.runs().calls(cast_run_id(trace))
+    assert [(call["response_id"], call["logprobs"]) for call in calls] == [
+        ("cmpl-a", [["a", -0.5]]),
+        ("cmpl-b", [["b", -0.25]]),
+    ]
+    assert calls[0]["params"]["logprobs"] is True
+    rebuilt = mas.runs().trace(cast_run_id(trace))
+    assert rebuilt.records[0].logprobs == (("b", -0.25),)  # the store gives the pairs back as tuples
+    assert rebuilt == trace
+
+
+def cast_run_id(trace: Any) -> str:
+    """The run id of a trace the engine finished."""
+    assert isinstance(trace.run_id, str)
+    return trace.run_id
+
+
+def test_seed_and_temperature_go_out_on_every_request_and_into_the_params(monkeypatch: pytest.MonkeyPatch) -> None:
+    log = CallLog()
+    llm, sent = recording_llm(
+        monkeypatch, [answer("a"), answer("b"), answer("c")], seed=7, temperature=0.0, call_log=log
+    )
+    llm.generate_with_meta("q")
+    assert sent[0] == {**first_request({}), "messages": sent[0]["messages"], "seed": 7, "temperature": 0.0}
+    assert list(sent[0]) == ["model", "messages", "max_tokens", "seed", "temperature"]
+    assert log.records[0].params == {"max_tokens": 4096, "seed": 7, "temperature": 0.0}
+    # a tool turn and promptolution's own path send them too
+    llm.get_tool_response_meta([{"role": "user", "content": "q"}], [add])
+    llm.get_response(["q"])
+    assert [(request["seed"], request["temperature"]) for request in sent] == [(7, 0.0)] * 3
+    assert [record.params for record in log.records] == [{"max_tokens": 4096, "seed": 7, "temperature": 0.0}] * 3
+
+    # an explicit call_kwargs key wins over the constructor's, and the other constructor key still goes out
+    llm, sent = recording_llm(
+        monkeypatch, [answer("a")], seed=7, temperature=0.5, call_kwargs={"seed": 9}, call_log=log
+    )
+    llm.generate_with_meta("q")
+    assert (sent[0]["seed"], sent[0]["temperature"]) == (9, 0.5)
+    assert log.records[-1].params == {"max_tokens": 4096, "seed": 9, "temperature": 0.5}
+    assert llm.call_params() == {"max_tokens": 4096, "seed": 9, "temperature": 0.5}
+
+    # the run store's call row carries them, through a system
+    llm, sent = recording_llm(monkeypatch, [answer("a")], seed=7, temperature=0.0)
+    mas = MAS([Agent("a", "Answer {query}", "answer")], llm=llm, version=2)
+    trace = mas.run("Why?")
+    (call,) = mas.runs().calls(cast_run_id(trace))
+    assert call["params"] == {"max_tokens": 4096, "seed": 7, "temperature": 0.0}
+
+
+def test_the_system_prompt_is_the_models_unless_the_caller_names_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    log = CallLog(capture_text=True)
+    script = [answer("a")] * 5
+    llm, sent = recording_llm(monkeypatch, script, system_prompt="Be brief.", call_log=log)
+    assert llm.system_prompt == "Be brief."
+    _, meta = llm.generate_with_meta("q")
+    assert sent[0]["messages"][0] == {"role": "system", "content": "Be brief."}
+    assert meta.system_prompt == "Be brief."
+    assert record_of(meta).system_prompt == "Be brief."
+    assert record_of(meta).to_dict()["system_prompt"] == "Be brief."
+    assert log.records[0].params == {"max_tokens": 4096, "system_prompt": "Be brief."}
+    assert log.records[0].system_prompt == "Be brief."
+    # a caller's own system prompt is sent and recorded instead
+    _, meta = llm.generate_with_meta("q", "Judge.")
+    assert (sent[1]["messages"][0]["content"], meta.system_prompt) == ("Judge.", "Judge.")
+    assert log.records[1].params == {"max_tokens": 4096, "system_prompt": "Judge."}
+    # the parts path, a tool turn and promptolution's own path send the model's too
+    llm.generate_parts_with_meta(["q"])
+    llm.get_tool_response_meta([{"role": "system", "content": "Be brief."}, {"role": "user", "content": "q"}], [add])
+    llm.get_response(["q"])
+    assert [request["messages"][0]["content"] for request in sent[2:]] == ["Be brief."] * 3
+    assert [record.params for record in log.records[2:]] == [{"max_tokens": 4096, "system_prompt": "Be brief."}] * 3
+    assert log.records[4].system_prompt == "Be brief."
+
+    # through a system: a plain agent and a tool agent are sent it, and their records keep it
+    planner = Agent("planner", "Plan {query}", output="plan")
+    coder = Agent("coder", "Do {plan}", output="answer", inputs=["plan"], tools=["add"])
+    script = [answer("a plan"), answer("", finish="tool_calls", calls=[ADD_CALL]), answer("42")]
+    llm, sent = recording_llm(monkeypatch, script, system_prompt="Be brief.")
+    trace = MAS([planner, coder], edges=[("planner", "coder")], llm=llm, tools=[add]).run("q")
+    assert trace.error is None
+    assert [request["messages"][0]["content"] for request in sent] == ["Be brief."] * 3
+    assert [record.system_prompt for record in trace.records] == ["Be brief.", "Be brief."]
+
+
+def test_a_default_model_sends_and_records_what_it_sent_before(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the default request is promptolution's, byte for byte (test_full_response_sends_promptolutions_request_bytes
+    # and test_text_only_requests_keep_their_bytes check the bytes); nothing new is recorded for it
+    log = CallLog(capture_text=True)
+    llm, sent = recording_llm(monkeypatch, [answer("a"), answer("b")], call_log=log)
+    assert llm.system_prompt == DEFAULT_SYSTEM
+    _, meta = llm.generate_with_meta("q")
+    assert sent[0] == first_request({}) | {"messages": sent[0]["messages"]}
+    assert sent[0]["messages"][0]["content"] == DEFAULT_SYSTEM
+    assert (meta.system_prompt, meta.logprobs) == (None, None)
+    assert log.records[0].params == {"max_tokens": 4096}
+    assert log.records[0].system_prompt == DEFAULT_SYSTEM
+    # naming the default explicitly is the same call
+    _, meta = llm.generate_with_meta("q", DEFAULT_SYSTEM)
+    assert (meta.system_prompt, log.records[1].params) == (None, {"max_tokens": 4096})
+
+    # a version 1 trace of a default system gains no logprobs or system_prompt key; response_id, like served_model,
+    # is there because the provider sent one
+    llm, _ = recording_llm(monkeypatch, [answer("4")])
+    trace = MAS([Agent("solver", "Solve {query}", output="answer")], llm=llm).run("q")
+    (record,) = trace.to_dict()["records"]
+    assert not {"logprobs", "system_prompt"} & set(record)
+    assert (record["response_id"], record["served_model"]) == ("x", "m")

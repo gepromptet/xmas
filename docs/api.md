@@ -122,14 +122,27 @@ teacher-forced sibling of generation.
 
 `APILLM(full_response=None)`, the default, sends plain agents' calls through
 xmas's own path, which sends the same request and keeps the provider's tokens,
-cost, finish reason and served model on the agent's record, as tool turns
-already do; a subclass that overrides a hook of promptolution's path keeps that
+cost, finish reason, served model and completion id (`response_id`) on the
+agent's record, as tool turns already do, and the chosen tokens' `logprobs`
+when the model's `call_kwargs` asked for them (`{"logprobs": True}`; no
+request is changed otherwise). A visit of several calls, a tool agent's, keeps
+the last call's logprobs on its record, and the run store's call log every
+call's. A subclass that overrides a hook of promptolution's path keeps that
 path, and `full_response=False` keeps it for any model. `APILLM(price=TokenPrice(...))` prices the tokens of a call
 whose response reports no cost; without a price, that cost stays unknown
 (`None`), never `0`. `APILLM(accepts=("text", "image"), produces=("text",))`
 states what the model takes and gives (see Version 2: media values); a
 prompt with a picture or a sound goes out as content parts, and a prompt
 without one keeps its exact request bytes.
+
+`APILLM(seed=7, temperature=0.0)` sends both on every request, merged ahead of
+`call_kwargs` so an explicit `call_kwargs` entry wins, and both show in every
+record's `params`. `APILLM(system_prompt="...")` replaces promptolution's
+default system prompt on every call whose caller names none, plain agents,
+tool agents and prompts with media alike; the one sent is on the call record's
+`params` and on the agent's record as `system_prompt`, both only when it is
+not the default, so a default `APILLM()` sends and records exactly what it did
+before. A `models:` entry sets all three per model name (see Bundles).
 
 ::: xmas.llms.api_llm.APILLM
     options:
@@ -148,7 +161,9 @@ without one keeps its exact request bytes.
 
 Per-call records: pass `call_log=CallLog()` and every call leaves a `CallRecord` with a
 `call_id` (UUID4), a `ts` (start time, ISO 8601 with offset), the `params` it was sent
-(`max_tokens` plus `call_kwargs`, minus `extra_headers`) and the provider's `response_id` (`response_ids` for a batch).
+(`max_tokens` plus `call_kwargs`, minus `extra_headers`, plus the `system_prompt` when it is not the default),
+the provider's `response_id` (`response_ids` for a batch) and, on xmas's own path, the call's `logprobs` when
+the request asked for them.
 `CallLog(capture_text=True)` also records `prompt`, `system_prompt` and `response`; a batch
 stays one record and fills `prompts`, `system_prompts`, `responses` instead.
 A provider or tool error raises `XmasError` (under Budgets and errors), which
@@ -173,8 +188,9 @@ carries the HTTP `status` when there is one.
 Functions an agent may call while it answers: `Agent.tools` names resolve
 against `MAS(..., tools=[...])` when the system is built. `MCPTools` needs the
 `mcp` extra. A tool turn sends sampling parameters (`temperature`, `top_p`,
-`stop`, ...) only when they are set in the model's `call_kwargs`, never as
-defaults. Every requested call runs, since a tool call need not be idempotent.
+`stop`, ...) only when they are set on the model (`APILLM(seed=, temperature=)`)
+or in its `call_kwargs`, never as defaults, and the model's `system_prompt`
+when it has one. Every requested call runs, since a tool call need not be idempotent.
 
 ::: xmas.tools
     options:
@@ -465,7 +481,7 @@ problems:
   promptolution's path has `full_response` false and is refused here.
 - `models names 'x', which no agent binds`; `models entry 'x' has key 'colour';
   it takes model, accepts, produces and the parameters max_tokens, timeout_s,
-  temperature, top_p, seed, reasoning_effort`; `models entry 'x' accepts
+  temperature, top_p, seed, reasoning_effort, system_prompt`; `models entry 'x' accepts
   'video'; a model may accept image, audio`.
 - `step 'draw' passes image 'png' to remote tool 'paint'; remote tools read no
   media`.

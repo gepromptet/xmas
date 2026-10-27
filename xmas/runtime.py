@@ -62,7 +62,6 @@ from langgraph.config import get_config
 from langgraph.errors import GraphBubbleUp, GraphRecursionError
 from langgraph.graph import StateGraph
 from langgraph.types import Command, Interrupt, Send, interrupt
-from promptolution.utils.templates import DEFAULT_SYS_PROMPT
 from promptolution.utils.token_counter import get_token_counter
 
 from xmas.agent import Agent
@@ -83,7 +82,14 @@ from xmas.errors import (
 from xmas.graph import END, START, back_edges, join_nodes
 from xmas.health import summarize
 from xmas.human import Asker, Human, Pause, Question, answer_value, question_id
-from xmas.llms.meta import SupportsImages, SupportsMeta, SupportsParts, supports_meta, supports_parts
+from xmas.llms.meta import (
+    SupportsImages,
+    SupportsMeta,
+    SupportsParts,
+    supports_meta,
+    supports_parts,
+    system_prompt_of,
+)
 from xmas.llms.parts import Part, render_parts
 from xmas.media import store
 from xmas.nodes import Box, Step
@@ -726,7 +732,7 @@ def agent_body(
                 prompt,
                 tools,
                 mas.max_tool_rounds,
-                DEFAULT_SYS_PROMPT,
+                system_prompt_of(llm),
                 count_tokens,
                 meter=meter,
                 check=None if form is None else check,
