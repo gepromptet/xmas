@@ -66,7 +66,7 @@ class MCPTools(ToolSource):
             max_concurrent: Calls in flight at once. Matches the server's per-key
                 default, so a batched run queues here instead of collecting
                 ``too_many_concurrent`` refusals.
-            writes: What a tool writes when it runs as a step, by tool name, as
+            writes: What a tool writes when it runs as a code node, by tool name, as
                 ``{tool: {write: type}}``; a tool not listed writes ``{tool: text}``.
                 A media write, such as ``{"paint": {"png": "image"}}``, is read
                 from the result's media blocks (:meth:`call_media`).

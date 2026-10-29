@@ -40,8 +40,8 @@ class GraphUpdater:
        prompt that never names a variable renders without it.
 
     A version 2 system mutates around what it holds still (see
-    :class:`~xmas.optimization.topology.Fixed`): steps and boxes stay steps and
-    boxes, human nodes, frozen agents and conditional edges stay as they are,
+    :class:`~xmas.optimization.topology.Fixed`): code nodes and modules stay code nodes and
+    modules, human actions, detached agents and conditional edges stay as they are,
     and a candidate its own check refuses is dropped rather than returned. A
     candidate keeps the parent's asker and run store.
 
@@ -138,8 +138,8 @@ class GraphUpdater:
     def rebuild(self, mas: MAS, names: list[str], edges: Edges) -> MAS:
         """Build a runnable system from a mutated topology; ``ValueError`` if a version 2 candidate does not check.
 
-        Steps, boxes and human nodes come over as they are, and so do the agents whose
-        predecessors did not change, frozen ones among them; a version 2 system
+        Code nodes, modules and human actions come over as they are, and so do the agents whose
+        predecessors did not change, detached ones among them; a version 2 system
         also keeps its conditional edges and its named ``START``/``END`` edges,
         in the parent's order.
         """
@@ -227,13 +227,13 @@ class GraphUpdater:
         """Work out what each agent of a version 2 candidate reads, invented ones included, in node order.
 
         An agent whose predecessors did not change keeps its reads, which covers
-        every frozen agent and every endpoint of a conditional edge. Any other
+        every detached agent and every endpoint of a conditional edge. Any other
         agent keeps the reads still satisfiable (an input, or written by a node
         that now runs before it) and gains every value its new predecessors
-        write; one left with nothing reads the system's inputs. Steps, boxes and
-        human nodes are not rewired.
+        write; one left with nothing reads the system's inputs. Code nodes, modules and
+        human actions are not rewired.
         """
-        code = {*mas.steps, *mas.boxes, *mas.humans}
+        code = {*mas.code_nodes, *mas.modules, *mas.human_actions}
         writes: dict[str, set[str]] = {name: {self.output_of(mas, name)} for name in names if name not in code}
         agents = list(writes)
         for value, writers in mas.checked().writers.items():
@@ -259,8 +259,8 @@ class GraphUpdater:
     # --------------------------------------------------------------- helpers
 
     def names_of(self, mas: MAS) -> list[str]:
-        """Return a system's node names: agents, then steps, boxes and human nodes."""
-        return [*mas.agents, *mas.steps, *mas.boxes, *mas.humans]
+        """Return a system's node names: agents, then code nodes, modules and human actions."""
+        return [*mas.agents, *mas.code_nodes, *mas.modules, *mas.human_actions]
 
     def edges_of(self, mas: MAS) -> Edges:
         """Return a system's node-level edges as pairs, conditional ones included, without the sentinel wiring."""
@@ -270,17 +270,19 @@ class GraphUpdater:
     def fixed_of(self, mas: MAS) -> Fixed | None:
         """Return what no mutation of a version 2 system may change, or ``None`` for version 1.
 
-        Frozen nodes, human nodes, the ends of conditional edges and every
+        Frozen nodes, human actions, the ends of conditional edges and every
         member of a ``for each`` chain are held, so no mutation breaks a chain
         or moves a person.
         """
         if mas.version != VERSION_2:
             return None
         conditional = [edge for edge in mas.edges if edge.kind is not EdgeKind.PLAIN]
-        held = set(mas.frozen).union(mas.each, mas.humans, *({edge.source, edge.target} for edge in conditional))
+        held = set(mas.detached).union(
+            mas.each, mas.human_actions, *({edge.source, edge.target} for edge in conditional)
+        )
         return Fixed(
             nodes=frozenset(held.difference(SENTINELS)),
-            code=frozenset([*mas.steps, *mas.boxes, *mas.humans]),
+            code=frozenset([*mas.code_nodes, *mas.modules, *mas.human_actions]),
             terminals=frozenset(terminals(self.names_of(mas), self.edges_of(mas))),
             conditional=frozenset((edge.source, edge.target) for edge in conditional),
         )
@@ -293,7 +295,7 @@ class GraphUpdater:
     def weakest_agent(self, mas: MAS, credit: dict[str, list[float]]) -> str | None:
         """Return the least-credited agent a candidate may rewire, or ``None`` when there is none to go on.
 
-        A frozen agent, or one at a conditional edge (:meth:`fixed_of`), is never the target.
+        A detached agent, or one at a conditional edge (:meth:`fixed_of`), is never the target.
         """
         fixed = self.fixed_of(mas)
         held = frozenset() if fixed is None else fixed.nodes

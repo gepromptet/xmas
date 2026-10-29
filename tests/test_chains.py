@@ -15,11 +15,11 @@ import pytest
 import yaml
 from langgraph.errors import GraphBubbleUp
 
-from xmas import MAS, Agent, Box, Budget, ErrorKind, RunStatus
+from xmas import MAS, Agent, Budget, ErrorKind, MASModule, RunStatus
 from xmas.budget import RunMeter
 from xmas.edges import Edge, EdgeKind
 from xmas.media import Image, Ref
-from xmas.nodes import Step
+from xmas.nodes import Code
 from xmas.optimization.graph_updater import GraphUpdater
 from xmas.optimization.synthesis import MechanicalSynthesizer
 from xmas.optimization.topology import TopologyBudget
@@ -139,9 +139,9 @@ def pages(
 
     llm = MockLLM(responder or (lambda p: f"Page {json.loads(p.split(' ', 2)[2])['id']} in words"), meta=True)
     edges: list[tuple[str, str] | Edge] = [("writer", "count")]
-    steps = [Step("count", "count"), Step("fin", "add_up")]
+    code_nodes = [Code("count", "count"), Code("fin", "add_up")]
     if loop:
-        steps.append(Step("trim", "trim"))
+        code_nodes.append(Code("trim", "trim"))
         edges += [
             ("count", "trim"),
             Edge("trim", "writer", EdgeKind.WHILE, when="len(plan.slides) > 0", max_visits=2),
@@ -155,7 +155,7 @@ def pages(
         edges,
         each={"writer": head, "count": "page in plan.slides"},
         outputs={"words": "list of json", "total": "json"},
-        steps=steps,
+        code_nodes=code_nodes,
         inputs={"plan": "json"},
         state={"plan": {"merge": "last"}} if loop else None,
         llm=llm,
@@ -269,17 +269,17 @@ def test_a_box_and_shared_prompts_in_a_chain() -> None:
         [("writer", "shorten")],
         each={"writer": {"item": "page", "in": "plan.slides", "key": "id"}, "shorten": "page in plan.slides"},
         outputs={"short": "list of text"},
-        boxes=[Box("shorten", inner, reads={"page": "draft"}, writes={"short": "short"})],
+        modules=[MASModule("shorten", inner, reads={"page": "draft"}, writes={"short": "short"})],
         inputs={"plan": "json"},
         llm=llm,
     )
     trace = mas.run_state(plan_of("one", "two"))
     assert trace.error is None
     assert trace.outputs == {"short": ["DRAFT ONE", "DRAFT TWO"]}
-    # the box's record and the records nested in it carry the item
-    boxes = trace["shorten"]
-    assert [(r.item, r.item_key, r.kind) for r in boxes] == [(0, "one", "box"), (1, "two", "box")]
-    assert [[(r.agent, r.item, r.item_key) for r in cast("Any", b.inner).records] for b in boxes] == [
+    # the module's record and the records nested in it carry the item
+    modules = trace["shorten"]
+    assert [(r.item, r.item_key, r.kind) for r in modules] == [(0, "one", "module"), (1, "two", "module")]
+    assert [[(r.agent, r.item, r.item_key) for r in cast("Any", b.inner).records] for b in modules] == [
         [("cutter", 0, "one")],
         [("cutter", 1, "two")],
     ]
@@ -292,8 +292,10 @@ def test_a_box_and_shared_prompts_in_a_chain() -> None:
         (("shorten",), "cutter", 1),
     ]
 
-    # a chain inside a box keeps its items' records in the box's inner trace
-    boxed = MAS([], boxes=[Box("all", mas, reads={"plan": "plan"}, writes={"short": "short"})], inputs={"plan": "json"})
+    # a chain inside a module keeps its items' records in the module's inner trace
+    boxed = MAS(
+        [], modules=[MASModule("all", mas, reads={"plan": "plan"}, writes={"short": "short"})], inputs={"plan": "json"}
+    )
     (whole,) = boxed.run_state(plan_of("one", "two"))["all"]
     assert whole.outputs == {"short": '["DRAFT ONE", "DRAFT TWO"]'}
     assert whole.inner is not None
@@ -334,7 +336,7 @@ def test_topology_search_never_breaks_a_chain() -> None:
             Agent("polisher", "Polish {summary}", "final", ["summary"]),
         ],
         [("writer", "count"), ("count", "summarizer"), ("summarizer", "polisher")],
-        steps=[Step("count", "count_words")],
+        code_nodes=[Code("count", "count_words")],
         inputs={"plan": "json"},
         each={"writer": {"item": "page", "in": "plan.slides", "key": "id"}, "count": "page in plan.slides"},
         llm=MockLLM(lambda prompt: "one two"),
@@ -376,9 +378,9 @@ def test_boxes_in_items_keep_apart() -> None:
         inputs={"page": "text"},
         llm=MockLLM(cut),
     )
-    box = Box("shorten", inner, reads={"page": "page"}, writes={"short": "short"})
+    box = MASModule("shorten", inner, reads={"page": "page"}, writes={"short": "short"})
     pages = {"pages": "list of text"}
-    mas = MAS([], boxes=[box], each={"shorten": "page in pages"}, outputs={"short": "list of text"}, inputs=pages)
+    mas = MAS([], modules=[box], each={"shorten": "page in pages"}, outputs={"short": "list of text"}, inputs=pages)
     trace = mas.run_state({"pages": ["a", "bad", "c", "d"]})
     (failed,) = [r for r in trace.records if r.error is not None]
     assert failed.item == 1
@@ -395,9 +397,9 @@ def test_boxes_in_items_keep_apart() -> None:
 
     both = MAS(
         [],
-        boxes=[
-            Box("narrow", system("Narrow", 1), reads={"pages": "pages"}, writes={"d": "narrow"}),
-            Box("wide", system("Wide", 4), reads={"pages": "pages"}, writes={"d": "wide"}),
+        modules=[
+            MASModule("narrow", system("Narrow", 1), reads={"pages": "pages"}, writes={"d": "narrow"}),
+            MASModule("wide", system("Wide", 4), reads={"pages": "pages"}, writes={"d": "wide"}),
         ],
         outputs={"narrow": "list of text", "wide": "list of text"},
         inputs=pages,
@@ -415,7 +417,7 @@ def test_langgraph_signals_pass_the_wrapper() -> None:
     mas = MAS(
         [Agent("writer", "Write {page}", "draft", ["page"])],
         [("writer", "halt")],
-        steps=[Step("halt", "pause")],
+        code_nodes=[Code("halt", "pause")],
         each={"writer": "page in pages", "halt": "page in pages"},
         inputs={"pages": "list of text"},
         outputs={"done": "list of text"},
@@ -446,10 +448,10 @@ def slides(*, assemble: bool) -> tuple[MAS, SeeingLLM, SeeingLLM]:
     """Each slide is rendered and judged on its own picture; ``reviewer``, then ``assemble``, take all of them."""
     eye = SeeingLLM(lambda parts: f"fits {parts[1].read_bytes().decode()}")
     desk = SeeingLLM("the deck holds")
-    steps, edges = [Step("render", "render_slide")], [("render", "judge"), ("judge", "reviewer")]
+    code_nodes, edges = [Code("render", "render_slide")], [("render", "judge"), ("judge", "reviewer")]
     outputs = {"review": "text", "verdict": "list of text"}
     if assemble:
-        steps.append(Step("assemble", "assemble_pictures"))
+        code_nodes.append(Code("assemble", "assemble_pictures"))
         edges.append(("reviewer", "assemble"))
         outputs["deck"] = "json"
     mas = MAS(
@@ -459,7 +461,7 @@ def slides(*, assemble: bool) -> tuple[MAS, SeeingLLM, SeeingLLM]:
         ],
         edges,
         llms={"eye": eye, "desk": desk},
-        steps=steps,
+        code_nodes=code_nodes,
         tools=[render_slide, assemble_pictures],
         inputs={"plan": "json"},
         each={"render": {"item": "page", "in": "plan.slides", "key": "id"}, "judge": "page in plan.slides"},

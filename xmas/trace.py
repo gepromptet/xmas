@@ -148,8 +148,8 @@ class AgentRecord:
         finish_reason: Why the model stopped, as the provider said.
         error_kind: The kind of a cut or refused answer that still produced text.
         served_model: The model the provider says served the call.
-        kind: What kind of node ran: ``"agent"``, ``"step"`` for a step,
-            ``"box"`` for a box, or ``"human"`` for a human node, whose
+        kind: What kind of node ran: ``"agent"``, ``"code"`` for a code node,
+            ``"module"`` for a module, or ``"human_action"`` for a human action, whose
             ``raw_response`` is its answer's JSON.
         rejected: Answers refused by the agent's answer form before the one it
             kept in ``raw_response``, in order.
@@ -158,13 +158,13 @@ class AgentRecord:
             conditional or error edges; ``None`` for a node without.
         capped: Whether a ``while`` edge that held was skipped because its
             target had run ``max_visits`` times.
-        inner: The inner system's trace, for a box.
+        inner: The inner system's trace, for a module.
         item: The index of the item a ``for each`` chain ran this visit for;
             ``None`` outside a chain.
         item_key: The item's key field, for a chain with ``key``.
         visit: Which visit of its node this is in its run (or its item), from 1.
         retries: How often a ``retry`` rule ran the visit again.
-        wait_s: Seconds a human node's question waited for its answer. Left
+        wait_s: Seconds a human action's question waited for its answer. Left
             out of ``==``, like ``latency_s``.
         lost: Whether the visit lost a ``first of`` race: it ran, paid, and
             its writes were dropped.
@@ -282,10 +282,10 @@ class Trace:
         return tuple(record for record in self.records if record.agent == agent)
 
     def walk(self) -> Iterator[tuple[tuple[str, ...], AgentRecord]]:
-        """Yield every record depth first, a box's inner records right after the box's own.
+        """Yield every record depth first, a module's inner records right after the module's own.
 
         Yields:
-            ``(path, record)``, where ``path`` names the boxes enclosing the
+            ``(path, record)``, where ``path`` names the modules enclosing the
             record, outermost first; ``()`` for this trace's own records.
         """
         for record in self.records:

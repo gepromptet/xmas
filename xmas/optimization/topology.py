@@ -11,9 +11,9 @@ graph is. Several agents may be fed from ``START``, as a fan-in-to-consensus
 shape needs; a second agent reaching ``END`` makes the output ambiguous, so the
 single-terminal rule is enforced.
 
-A version 2 system adds what no operator may touch (:class:`Fixed`): frozen
-nodes and the endpoints of conditional edges keep every edge around them, steps
-and boxes are never removed, and the system keeps the nodes it ends in. The
+A version 2 system adds what no operator may touch (:class:`Fixed`): detached
+nodes and the endpoints of conditional edges keep every edge around them, code nodes
+and modules are never removed, and the system keeps the nodes it ends in. The
 operators then move plain edges between free nodes only, and whether a
 candidate runs is :func:`~xmas.check.check_system`'s answer, asked when the
 candidate is built.
@@ -68,7 +68,7 @@ class TopologyBudget:
     One object, consulted by the sampler, the mutation operators, the crossover
     and the search loop alike, so that "legal" means one thing.
 
-    The node bounds count every node, steps and boxes included, so a system
+    The node bounds count every node, code nodes and modules included, so a system
     whose code nodes already fill ``max_agents`` cannot grow.
 
     Attributes:
@@ -116,7 +116,7 @@ class Fixed:
     Attributes:
         nodes: Frozen nodes, conditional-edge endpoints and chain members. No operator adds,
             removes or moves an edge touching one, or removes the node.
-        code: Steps and boxes. Their plain edges may move, but only agents are
+        code: Code nodes and modules. Their plain edges may move, but only agents are
             invented and dropped.
         terminals: The nodes the parent ends in, and so every candidate.
         conditional: The conditional edges, as pairs.
@@ -312,7 +312,7 @@ def remove_agent(
     """Drop an agent, bridging its predecessors to its successors.
 
     Bridging rather than simply deleting is what keeps the rest of the graph
-    connected. Fixed nodes, steps and boxes are
+    connected. Fixed nodes, code nodes and modules are
     never dropped, nor an agent next to a fixed node, whose edge is fixed too.
     """
     terminal = terminals(names, edges)

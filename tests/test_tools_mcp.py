@@ -28,8 +28,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from xmas import MAS, Agent, ToolCall
 from xmas.errors import BadFormat, XmasError
 from xmas.media import Ref
-from xmas.nodes import Step
-from xmas.tools import index_tools, run_step
+from xmas.nodes import Code
+from xmas.tools import index_tools, run_code
 from xmas.tools.mcp import MCPTools, media_blocks, result_text
 from xmas.values import JSON, TEXT, parse_type
 
@@ -286,18 +286,18 @@ def test_one_remote_callable_is_a_tool_and_a_step(server: tuple[Server, str]) ->
 
         llm = MockLLM(turns=[("", [req("shout", '{"text": "hi"}')]), ("said hi", [])])
         writer = Agent("writer", "Greet {query}.", output="draft", tools=["shout"])
-        steps = [
-            Step("loud", "shout", reads={"text": "draft"}, writes={"shout": "loud"}),
-            Step("size", "tally", reads={"text": "loud"}),
+        code_nodes = [
+            Code("loud", "shout", reads={"text": "draft"}, writes={"shout": "loud"}),
+            Code("size", "tally", reads={"text": "loud"}),
         ]
-        mas = MAS([writer], [("writer", "loud"), ("loud", "size")], steps=steps, llm=llm, tools=[remote])
+        mas = MAS([writer], [("writer", "loud"), ("loud", "size")], code_nodes=code_nodes, llm=llm, tools=[remote])
         assert list(index_tools(mas.tools)) == ["run_python", "refuse", "slow", "shout", "tally", "paint"]
         trace = mas.run("Tom")
 
     assert trace.error is None
     called, loud, size = trace.records
     assert called.tool_calls == (ToolCall("shout", {"text": "hi"}, "HI!"),)
-    assert (loud.kind, loud.inputs, loud.outputs) == ("step", {"draft": "said hi"}, {"loud": "SAID HI!"})
+    assert (loud.kind, loud.inputs, loud.outputs) == ("code", {"draft": "said hi"}, {"loud": "SAID HI!"})
     assert (size.inputs, size.outputs) == ({"loud": "SAID HI!"}, {"tally": '{"chars": 8}'})
     assert trace.output == '{"chars": 8}'
 
@@ -308,12 +308,12 @@ def test_media_writes_from_a_remote_tool(
     monkeypatch.setenv("XMAS_STORE", str(tmp_path))
     with MCPTools(server[1], KEY, writes={"paint": {"png": "image"}}) as remote:
         spec = {item.name: item for item in remote.tools()}["paint"]
-        png = run_step(spec, remote, {"pages": 1})["png"]
+        png = run_code(spec, remote, {"pages": 1})["png"]
         assert isinstance(png, Ref)
         assert png.location.startswith(str(tmp_path))
         assert (png.read_bytes(), png.media_type) == (b"png-0", "image/png")
         with pytest.raises(BadFormat, match="expected one image block, got 2"):
-            run_step(spec, remote, {"pages": 2})
+            run_code(spec, remote, {"pages": 2})
         assert remote.call_media("paint", {"pages": 0}) == [(b"%PDF", "application/pdf")]
         with pytest.raises(XmasError, match="exit_code=1"):
             remote.call_media("run_python", {"code": "raise"})
@@ -322,13 +322,13 @@ def test_media_writes_from_a_remote_tool(
     with MCPTools(server[1], KEY, writes=many) as remote:
         spec = {item.name: item for item in remote.tools()}["paint"]
         assert spec.writes == {"pngs": parse_type("list of image")}
-        pngs = run_step(spec, remote, {"pages": 2})["pngs"]
+        pngs = run_code(spec, remote, {"pages": 2})["pngs"]
         assert [ref.read_bytes() for ref in pngs] == [b"png-0", b"png-1"]
 
     # a text write of the same tool still names the picture, never inlines it
     with MCPTools(server[1], KEY) as remote:
         spec = {item.name: item for item in remote.tools()}["paint"]
-        assert run_step(spec, remote, {"pages": 1}) == {"paint": "drawn\n[image content omitted]"}
+        assert run_code(spec, remote, {"pages": 1}) == {"paint": "drawn\n[image content omitted]"}
 
 
 # ------------------------------------------------------------- construction

@@ -184,7 +184,7 @@ defaults. Every requested call runs, since a tool call need not be idempotent.
         - ToolSource
         - ToolCallRequest
         - LocalTools
-        - run_step
+        - run_code
 
 ::: xmas.tools.mcp.MCPTools
 
@@ -194,16 +194,16 @@ defaults. Every requested call runs, since a tool call need not be idempotent.
         - assistant_span
         - mask_logprobs
 
-## Version 2: steps, typed values, answer forms
+## Version 2: code nodes, typed values, answer forms
 
 A system is version 2 when it uses anything below (or `MAS(..., version=2)`);
 a system that uses none of it is version 1, with its own spec format. What a
 version 2 system can do:
 
-- **Steps.** `MAS(..., steps=[Step("count", uses="count_words")])` runs a
+- **Code nodes.** `MAS(..., code_nodes=[Code("count", uses="count_words")])` runs a
   callable from `tools=` as a node, with no model call. The same callable can
-  also be an agent's tool. A step reads its parameters and writes one value
-  named like the callable; `Step(reads={param: value}, writes={write: value})`
+  also be an agent's tool. A code node reads its parameters and writes one value
+  named like the callable; `Code(reads={param: value}, writes={write: value})`
   renames them, and `tool(writes={"counts": "json"})` declares other writes.
 - **Typed values.** Every value is `text` or `json` (`TEXT`, `JSON`), or a
   list of them at any depth (`list of text`, `list of list of json`); a
@@ -234,9 +234,9 @@ an object or a list's objects.
 
 A version 2 spec (`version: 2`) has the keys `inputs`, `outputs`, `agents`
 (`model`, `prompt`, `for each`, `reads`, `writes: {name: type}`, `tools`,
-`schema`, `retry`), `steps` (`uses`, `for each`, `reads`, `writes`, `retry`),
-`boxes` (`for each`, `reads`, `writes`, `system`), `edges` (a string is a
-chain of edges, `a -> b -> c`), `state`, `frozen`, `health`, `models` (what
+`schema`, `retry`), `code_nodes` (`uses`, `for each`, `reads`, `writes`, `retry`),
+`modules` (`for each`, `reads`, `writes`, `system`), `edges` (a string is a
+chain of edges, `a -> b -> c`), `state`, `health`, `models` (what
 each named model accepts and produces), `callables` (what each callable reads
 and writes), `default_model` and `prompts`. An agent's
 `reads` is a list of values or a map `{placeholder: value}`; its `prompt` names
@@ -249,7 +249,7 @@ Refused, with a message saying so: `to_yaml` on a version 2 system (`save(path)`
 writes it as a `.mas` bundle; `to_dict()` gives its spec), and `run(query)` on a
 system whose inputs are not exactly `{query: text}` (`run_state(values)` runs it).
 
-::: xmas.nodes.Step
+::: xmas.nodes.Code
 
 ::: xmas.edges
     options:
@@ -270,9 +270,9 @@ system whose inputs are not exactly `{query: text}` (`run_state(values)` runs it
         - render_value
         - FILE
         - MEDIA
-        - media_kind
+        - ref_kind
         - plain
-        - coerce_media
+        - coerce_ref
 
 ::: xmas.schemas
     options:
@@ -295,7 +295,7 @@ system whose inputs are not exactly `{query: text}` (`run_state(values)` runs it
       members:
         - Join
 
-## Version 2: operators, boxes, health
+## Version 2: operators, modules, health
 
 Edges decide where a run goes next. In a spec, a chain `a -> b` is plain (always
 taken); a one-key mapping gives the operator:
@@ -321,17 +321,17 @@ literals, `== != < <= > >= in`, `and or not`, `exists(path)`, `len(x)`,
 `visits`, `cost`, `elapsed`, and registered callables that return a bool. The
 check refuses an unknown name before a run.
 
-A **box** (`Box(name, system, reads, writes)`, spec `boxes:`) runs a whole
+A **module** (`MASModule(name, system, reads, writes)`, spec `modules:`) runs a whole
 version 2 system as one node: `reads` maps its inputs from outer values,
 `writes` its values back out. It spends from the outer budget, and its record
-holds the inner trace (`Trace.walk()` yields every record with its box path).
+holds the inner trace (`Trace.walk()` yields every record with its module path).
 
-::: xmas.nodes.Box
+::: xmas.nodes.MASModule
 
-`frozen: [judge]` (`MAS(frozen=...)`) keeps a node as it is through every
+`detached: true` on a node (`Agent(..., detached=True)`) keeps it as it is through every
 optimizer: no prompt, model, read, write or edge of it changes, none removes it.
 The topology search also leaves conditional edges and their endpoints alone,
-holds every member of a `for each` chain, keeps steps and boxes, and drops a
+holds every member of a `for each` chain, keeps code nodes and modules, and drops a
 candidate the check refuses.
 
 Every run gets **health** signals in `Trace.health`, for information only:
@@ -342,7 +342,7 @@ items, failed items and each item's cost (`Health.items`). A spec tunes them wit
 min_samples, leak}`; a healthy run's trace dict has no `health` key.
 
 `MAS.describe()` returns plain data: every node with its kind, model name,
-reads, writes and `frozen`; every edge with its kind and condition; the join of
+reads, writes and `detached`; every edge with its kind and condition; the join of
 each node fed by several edges; an `id` hashed from it. Like the spec, it names
 models only: endpoints and keys come from configuration.
 
@@ -374,7 +374,7 @@ outside lands on. Inside, the item has the list's item type (json for a path
 with fields) and each write its declared type; outside, a write is a list in
 item order. Exits leave the chain by one plain or `else` edge to one target;
 a chain with no exit ends the run and needs declared outputs. Chains do not
-nest, also not through a box.
+nest, also not through a module.
 
 Items run in parallel behind LangGraph's `Send`, each on a run of the chain's
 own system with the item's index and key on every record (`AgentRecord.item`,
@@ -383,7 +383,7 @@ or an unrouted `money` gets a failed record and `None` in every gathered list,
 and the run goes on; those three end the run. A `while` edge inside a chain
 loops per item, and its cap counts per item; a `while` edge into the head
 counts passes of the whole chain. `Budget(max_parallel_calls=n)` caps the model
-calls in flight across branches, boxes and items. Each graph run has a pool of up
+calls in flight across branches, modules and items. Each graph run has a pool of up
 to `xmas.runtime.BRANCH_THREADS` (64) threads, whatever the host's cores, so the
 branches and `at once` items of a run truly run together on a small machine too.
 
@@ -398,7 +398,7 @@ run, joined at the end. The trace of a version 2 run carries `run_id` and
 visit's `start` and `end` and each item's `item_start` and `item_end`, on the
 run's threads; a listener that raises is warned about once and dropped.
 
-`MAS(..., retry={"render": {"outage": 1}})` runs an agent or step again for a
+`MAS(..., retry={"render": {"outage": 1}})` runs an agent or code node again for a
 kind in `RETRYABLE`, on the same visit: one record, with `retries` and the cost
 of every attempt. Two reads are reserved and written by no node: `error`, the
 `{kind, message, node}` of the failure an `on error` edge routed to the reading
@@ -407,7 +407,7 @@ node, and `run`, `{cost_usd, elapsed_s, calls, records}` at read time.
 another name, and records key their inputs by placeholder.
 `MAS(..., prompt_names={"checker": "judge", "figure_checker": "judge"})` lets agents share one
 prompt; `copy(prompts=...)` changes it for all of them, and an optimizer works on it as
-one prompt, through the first agent that shares it, unless one of them is frozen.
+one prompt, through the first agent that shares it, unless one of them is detached.
 
 `describe()` gains `for each`, `placeholders` and `retry` on nodes, and
 `outputs` and `groups` (one per chain) at the top, each only when set.
@@ -429,7 +429,7 @@ them, is a `Ref`: a location, a media type, a size and a sha256. State,
 records and traces hold refs, never bytes; `Trace.to_dict()` writes each ref
 as its `to_dict()`. `run_state` turns a `Path` input into `Ref.from_path` (a
 reference to your file, whose checksum `read_bytes` checks on every read). A
-step that returns a `Path` writes a copy into the store; a `Ref` passes; bytes
+code node that returns a `Path` writes a copy into the store; a `Ref` passes; bytes
 are refused ("return a Path or a Ref, Ref.from_bytes stores bytes"). A model's
 pictures and an MCP tool's image, audio and blob blocks go to the store too
 (`MCPTools(..., writes={"paint": {"png": "image"}})`). The store is
@@ -448,10 +448,10 @@ problems:
 
 - `agent 'judge' reads image 'png', but model 'text-model' accepts only text;
   bind a model that accepts image (models: {text-model: {accepts: [image]}})
-  or convert it first with a step`; for the default model the fix reads
+  or convert it first with a code node`; for the default model the fix reads
   `give it accepts = ("text", "image")`.
 - `agent 'writer' reads document 'house'; a model reads a document through a
-  conversion step, such as one using xmas.convert.document_text` (a table:
+  conversion code node, such as one using xmas.convert.document_text` (a table:
   `table_rows`). A `file` read reaches the prompt as the ref's JSON line.
 - `agent 'painter' writes image 'picture', but model 'text-model' produces
   only text; bind a model that produces image (models: {text-model:
@@ -467,10 +467,10 @@ problems:
   it takes model, accepts, produces and the parameters max_tokens, timeout_s,
   temperature, top_p, seed, reasoning_effort`; `models entry 'x' accepts
   'video'; a model may accept image, audio`.
-- `step 'draw' passes image 'png' to remote tool 'paint'; remote tools read no
+- `code node 'draw' passes image 'png' to remote tool 'paint'; remote tools read no
   media`.
 - `Agent 'reader' uses tool 'document_text', which reads document 'source'; a
-  model passes no media to a tool, so run it as a step.` A model would make up
+  model passes no media to a tool, so run it as a code node.` A model would make up
   the ref, and the tool would read whatever file it names; this holds in
   version 1 too.
 
@@ -488,7 +488,7 @@ write needs exactly one picture and a `list of image` at least one, else the
 answer is `bad_format`.
 
 **Conversions.** `xmas.convert.document_text` (text, Markdown and HTML) and
-`table_rows` (CSV and TSV) are callables a step uses, so a model reads a
+`table_rows` (CSV and TSV) are callables a code node uses, so a model reads a
 document or a table only through a visible node. Any other type is refused
 with a message that asks for a step of your own.
 
@@ -507,7 +507,7 @@ with a message that asks for a step of your own.
         - File
         - Capabilities
         - TEXT_ONLY
-        - MEDIA_KINDS
+        - REF_KINDS
         - DOCUMENT_TYPES
         - TABLE_TYPES
         - ACCEPTABLE
@@ -535,13 +535,13 @@ with a message that asks for a step of your own.
 
 ## Version 2: people, Stop, first of
 
-A **human node** asks a person: `Human(name, form, reads, writes, question=...,
+A **human action** asks a person: `HumanAction(name, form, reads, writes, question=...,
 options=, labels=, pair=, edits=, timeout_s=, default=)` with one of the four
-`FORMS`, passed as `MAS(..., humans=[...])`. A human makes the system version 2.
+`FORMS`, passed as `MAS(..., human_actions=[...])`. A human makes the system version 2.
 Its question and labels are templates over its reads, paths included. It compiles
 to its asking node and a deferred `<name>.wait` node, so a question waits only
 once every other branch has ended or paused; the edges out of a human leave from
-its wait node and route on the answer. A chain or box that holds a human runs
+its wait node and route on the answer. A chain or module that holds a human runs
 its items or inner run on threads of their own, so one paused item never holds
 its siblings.
 
@@ -561,7 +561,7 @@ human's record and `waited_s` in health. A question past its deadline takes its
 once per question and may answer at once; `withdraw(question, reason)` is
 called for each open question of a run that is stopped, paused or running. `run`,
 `run_batch`, `predict` and the optimizers never wait: an open question takes its
-default, else the run fails with `Unanswered: human node 'x' got no answer in an
+default, else the run fails with `Unanswered: human action 'x' got no answer in an
 unattended run`, from a chain item or a box too. `ReplayAsker(traces)` answers from recorded human records.
 
 The **run store** is a LangGraph checkpoint saver on one SQLite file, its
@@ -583,7 +583,7 @@ run id, `describe()` id, `running`, start time) and when it ends or pauses
 in `xmas_records` the moment each record is kept (position, node, kind, item,
 visit, model, cost, latency, tokens, finish reason, error, route, inputs and
 outputs as JSON, the raw answer, the rendered prompt, and the record itself;
-`boxed` marks a box's inner record); one in `xmas_events` per event; one in
+`boxed` marks a module's inner record); one in `xmas_events` per event; one in
 `xmas_calls` per model call (call id, node, start time, model, served model,
 tokens, cost, latency, finish reason, error kind, and the call's parameters
 without any key, token, password or header). Rows are only added, one insert
@@ -597,7 +597,7 @@ the file. From the shell, `xmas runs [--json] [--status s] [--system id]
 records as a table, or its whole trace.
 
 **`MAS.stop(run_id, reason="stopped")`** stops a running run in this process
-(`RUNNING` holds each run's meter by id): no call, step or item starts after
+(`RUNNING` holds each run's meter by id): no call, code node or item starts after
 it, waits for a slot or a gate end within `SLICE_S`, and a model call in flight
 sees the stop on its `cancel_flag()` and is cut (`Stopped`, with the paid
 `meta` and the partial `text`). The trace's status is `stopped`, one `stop`
@@ -605,14 +605,14 @@ event is emitted, and a visit cut after a call keeps a failed record. A paused
 run is marked stopped instead; `False` means no such run is running or paused.
 A run id given to `run_state` that is running ("is in use by a running run") or
 kept in the store ("is taken") is refused, and so is a `/` in the id of a run
-that can pause, since it names the threads of the run's items and boxes. `APILLM(stream=True)` streams, so a
+that can pause, since it names the threads of the run's items and modules. `APILLM(stream=True)` streams, so a
 cut call keeps its partial answer; the default request is unchanged.
 
 **`first of`** edges (`EdgeKind.FIRST`, `a -> b: first of` in a spec) from one
-node form a race of agents, steps or boxes that write the same values and go on
-to one node or all end the run; a box holding a human does not race. Each
+node form a race of agents, code nodes or modules that write the same values and go on
+to one node or all end the run; a module holding a human does not race. Each
 contestant runs under
-`contestant(meter.race(key))`, the key being the run (each box visit and chain
+`contestant(meter.race(key))`, the key being the run (each module visit and chain
 item has its own), the source, the item and the visit;
 the first to finish wins (`RunMeter.win`) and writes, the others are cut
 (`RaceLost`) or their writes dropped, and each keeps a record with `lost` set
@@ -634,7 +634,7 @@ further; the race fails with the last failure when every contestant failed.
         - TIE
         - DEFAULT_LABELS
 
-::: xmas.human.Human
+::: xmas.human.HumanAction
     options:
       heading_level: 3
       show_root_full_path: false
@@ -740,7 +740,7 @@ further; the race fails with the last failure when every contestant failed.
 **`MAS.save(path, *, zipped=False)`** writes a system as a `.mas` bundle, a
 folder or one zip file: `xmas.yaml` (the spec without its prompts),
 `callables.yaml`, `prompts/<name>.md` (the text, after an optional header that
-holds only the answer's `schema`), `boxes/<box>.mas/`, and `xmas.lock` (the
+holds only the answer's `schema`), `modules/<box>.mas/`, and `xmas.lock` (the
 sha256 of every other file and of each python callable's source), written last.
 Into an existing folder it writes only the files whose parsed content changed
 and never touches `examples/` or `optimize.yaml`. **`MAS.load(path, *, llm=None,
@@ -748,7 +748,7 @@ llms=None, tools=(), config=None, overlay=None, resolve=True, verify=None,
 trust=False)`** reads one back: a callable in `tools` wins, a python callable is
 found by its `import` path and bound to its `params`, a remote one reaches the
 server its `server` names under `[tools.<name>]`, and every bound model name not
-given gets `build_llms`, each box's `default_model` too. A bundle may name any
+given gets `build_llms`, each module's `default_model` too. A bundle may name any
 code, so without `trust` nothing is imported: a python callable must be a `Tool`
 (made with `@tool`) in a module already imported, else the load refuses and
 names `tools=[...]` and `trust=True`. With `resolve`, the names are checked

@@ -4,12 +4,12 @@ A value can also be an `image`, `audio`, a `document`, a `table` or a `file`, or
 them. Such a value is a reference, a `Ref`: where the file is, its media type, its size
 and a checksum. The bytes stay in the file until a model needs them.
 
-Here a reviewer looks at the pages of a deck, and a step keeps the first page as the
+Here a reviewer looks at the pages of a deck, and a code node keeps the first page as the
 cover. The pages come in as files on disk:
 
 ```python
 from pathlib import Path
-from xmas import MAS, APILLM, Agent, Image, Step
+from xmas import MAS, APILLM, Agent, Image, Code
 from xmas.tools import tool
 
 
@@ -23,7 +23,7 @@ reviewer = Agent("reviewer", prompt="Review these slides.\n{pages}", inputs=["pa
 vision = APILLM(model="vision-model", accepts=("text", "image"))
 deck = MAS(
     [reviewer],
-    steps=[Step("cover", uses="keep_cover")],
+    code_nodes=[Code("cover", uses="keep_cover")],
     inputs={"pages": "list of image"},
     outputs={"review": "text", "cover": "image"},
     tools=[keep_cover],
@@ -47,9 +47,9 @@ Review these slides.
 ```
 
 `run_state` turns each `Path` into a reference to your file. The checksum is checked on
-every read, so a file that changes during the run is refused. A step that returns a
-`Path` writes a copy in the store instead, so a step that rewrites one file per item
-leaves earlier values alone. A step may also return a `Ref`. Bytes are refused, since
+every read, so a file that changes during the run is refused. A code node that returns a
+`Path` writes a copy in the store instead, so a code node that rewrites one file per item
+leaves earlier values alone. A code node may also return a `Ref`. Bytes are refused, since
 `Ref.from_bytes(data, "image/png")` stores them. The store is a folder (see
 [Configuration](bundles.md#configuration)), and the same bytes are stored once. In a trace, a reference is a small
 dictionary, so `trace.to_dict()` stays plain JSON.
@@ -84,7 +84,7 @@ The rest of the rules:
 
 - A model sees an image or audio as a content part. `APILLM` sends parts; another
   model class needs `generate_parts_with_meta` and `full_response = True`.
-- A model never reads a document or a table directly. A step turns it into text or rows
+- A model never reads a document or a table directly. A code node turns it into text or rows
   first, so the conversion shows in the graph. `xmas.convert` has two such functions:
   `document_text` reads text, Markdown and HTML, and `table_rows` reads CSV and TSV. For
   a PDF, write a step of your own.
@@ -92,6 +92,6 @@ The rest of the rules:
   images. The picture goes to the store, and the value is its reference. Such an agent
   takes no tools.
 - An MCP tool may write a picture too: `MCPTools(..., writes={"paint": {"png": "image"}})`.
-  A remote tool reads no media, so the check refuses a step that passes it one.
-- A tool an agent calls reads no media either: the model would make up the reference.
-  Run such a function as a step.
+  A remote tool reads no pictures or files, so the check refuses a code node that passes it one.
+- A tool an agent calls reads no pictures or files either: the model would make up the reference.
+  Run such a function as a code node.

@@ -1,4 +1,4 @@
-"""People in the graph: a human node pauses its branch, the run returns paused, and resumes from its store."""
+"""People in the graph: a human action pauses its branch, the run returns paused, and resumes from its store."""
 
 from __future__ import annotations
 
@@ -17,12 +17,12 @@ import pytest
 from langgraph.checkpoint.serde.event_hooks import SerdeEvent, register_serde_event_listener
 
 from tests.conftest import MockLLM, SeeingLLM, req
-from xmas import MAS, Agent, Box, Budget, Step
+from xmas import MAS, Agent, Budget, Code, MASModule
 from xmas.budget import RUNNING
 from xmas.edges import Edge, EdgeKind
 from xmas.errors import ErrorKind, Stopped
 from xmas.graph import END
-from xmas.human import Human, Question, ReplayAsker
+from xmas.human import HumanAction, Question, ReplayAsker
 from xmas.llms.meta import CallMeta
 from xmas.optimization.graph_updater import GraphUpdater
 from xmas.optimization.synthesis import MechanicalSynthesizer
@@ -41,11 +41,11 @@ TOM = {"who": "tom"}
 def people(
     agents: list[Agent],
     edges: Sequence[tuple[str, str] | Edge] = (),
-    humans: Sequence[Human] = (),
+    human_actions: Sequence[HumanAction] = (),
     **kwargs: Any,
 ) -> MAS:
     """A system of agents and people."""
-    return MAS(agents, edges, humans=humans, **kwargs)
+    return MAS(agents, edges, human_actions=human_actions, **kwargs)
 
 
 def run(mas: MAS, values: Mapping[str, Any], run_id: str, events: list[Event] | None = None) -> Trace:
@@ -69,13 +69,15 @@ class Asker:
         return self.reply(question)
 
 
-def gate(**settings: Any) -> Human:
+def gate(**settings: Any) -> HumanAction:
     """An approve gate on the draft."""
     labels = {"yes": "Ship {draft}", "no": "Redraw"}
-    return Human("approve", "approve", ["draft"], "approval", question="Ship this? {draft}", labels=labels, **settings)
+    return HumanAction(
+        "approve", "approve", ["draft"], "approval", question="Ship this? {draft}", labels=labels, **settings
+    )
 
 
-def gated(llm: MockLLM | None = None, *, human: Human | None = None, **kwargs: Any) -> MAS:
+def gated(llm: MockLLM | None = None, *, human: HumanAction | None = None, **kwargs: Any) -> MAS:
     """The writer drafts, ``approve`` asks; ship when approved, else hold."""
     agents = [
         Agent("writer", "Write {query}", "draft"),
@@ -105,10 +107,10 @@ def chained(asker: Any = None, *, confirm: bool = False, side: bool = True, **kw
         return "notes" if prompt.startswith("Note") else f"draft {json.loads(prompt[6:])['id']}"
 
     each = {"drafter": {"item": "page", "in": "plan.slides", "key": "id"}, "fix": "page in plan.slides"}
-    humans = [Human("fix", "approve", ["draft"], "fixed", question="Fix {draft}?")]
+    human_actions = [HumanAction("fix", "approve", ["draft"], "fixed", question="Fix {draft}?")]
     edges: list[tuple[str, str] | Edge] = [("drafter", "fix")]
     if confirm:
-        humans.append(Human("confirm", "approve", ["draft"], "confirmed", question="Sure about {draft}?"))
+        human_actions.append(HumanAction("confirm", "approve", ["draft"], "confirmed", question="Sure about {draft}?"))
         each["confirm"] = "page in plan.slides"
         edges.append(("fix", "confirm"))
     agents = [Agent("drafter", "Draft {page}", "draft", ["page"])]
@@ -118,7 +120,15 @@ def chained(asker: Any = None, *, confirm: bool = False, side: bool = True, **kw
         outputs["notes"] = "text"
     llm = MockLLM(write)
     mas = people(
-        agents, edges, humans, asker=asker, each=each, outputs=outputs, inputs={"plan": "json"}, llm=llm, **kwargs
+        agents,
+        edges,
+        human_actions,
+        asker=asker,
+        each=each,
+        outputs=outputs,
+        inputs={"plan": "json"},
+        llm=llm,
+        **kwargs,
     )
     mas.calls = calls  # type: ignore[attr-defined]
     return mas
@@ -165,7 +175,7 @@ def test_approve_pauses_and_resumes(tmp_path: Path) -> None:
     assert done.outputs["held"] is None
     assert [record.agent for record in done.records] == ["writer", "approve", "ship"]
     (human,) = done["approve"]
-    assert (human.kind, human.cost_usd, human.route, human.visit) == ("human", 0.0, ("ship",), 1)
+    assert (human.kind, human.cost_usd, human.route, human.visit) == ("human_action", 0.0, ("ship",), 1)
     assert human.inputs == {"draft": "a draft"}
     assert human.rendered_prompt == "Ship this? a draft"
     assert cast("float", human.wait_s) >= 0.02
@@ -192,7 +202,7 @@ def test_an_optimizer_keeps_people_where_they_are() -> None:
     assert "approve" in fixed.nodes
     assert "approve" in fixed.code
     rebuilt = updater.rebuild(mas, updater.names_of(mas), updater.edges_of(mas))
-    assert rebuilt.humans == mas.humans
+    assert rebuilt.human_actions == mas.human_actions
     assert (rebuilt.asker, rebuilt.store) == (mas.asker, mas.store)
     assert set(rebuilt.agents) == {"writer", "ship", "hold"}
     assert rebuilt.run_state({"query": "cats"}, run_id="o1").status == "paused"
@@ -203,7 +213,7 @@ def test_a_pause_lets_other_branches_end() -> None:
     agents = [Agent(name, f"{name} {{{read}}}", f"{name}_out", [read]) for name, read in (
         ("n1", "query"), ("n2", "n1_out"), ("n3", "n2_out"))]  # fmt: skip
     agents.append(Agent("join", "join {approval} {n3_out}", "joined", ["approval", "n3_out"]))
-    ask = Human("approve", "approve", ["query"], "approval", question="Go on with {query}?")
+    ask = HumanAction("approve", "approve", ["query"], "approval", question="Go on with {query}?")
     edges = [("n1", "n2"), ("n2", "n3"), ("approve", "join"), ("n3", "join")]
     mas = people(agents, edges, [ask], llm=llm)
     paused = run(mas, {"query": "q"}, "u1")
@@ -212,8 +222,8 @@ def test_a_pause_lets_other_branches_end() -> None:
     done = resume(mas, "u1", {"u1/approve/1": {"approved": True, **TOM}})
     assert [record.agent for record in done.records] == ["n1", "n2", "n3", "approve", "join"]
 
-    # Two humans on two branches pause together; answering one keeps the other open under its id.
-    check = Human("check", "approve", ["n2_out"], "checked", question="Is {n2_out} right?")
+    # Two human actions on two branches pause together; answering one keeps the other open under its id.
+    check = HumanAction("check", "approve", ["n2_out"], "checked", question="Is {n2_out} right?")
     agents[2] = Agent("n3", "n3 {n2_out} {checked}", "n3_out", ["n2_out", "checked"])
     edges = [("n1", "n2"), ("n2", "check"), ("check", "n3"), ("approve", "join"), ("n3", "join")]
     both = people(agents, edges, [ask, check], llm=llm)
@@ -267,20 +277,20 @@ def test_pauses_inside_chain_items() -> None:
 
 
 def boxed_inner(*, confirm: bool = False) -> MAS:
-    """The box's system: writer -> approve [-> confirm]."""
+    """The module's system: writer -> approve [-> confirm]."""
     agents = [Agent("writer", "Write {topic}", "draft", ["topic"])]
-    humans, edges = [gate()], [("writer", "approve")]
+    human_actions, edges = [gate()], [("writer", "approve")]
     if confirm:
-        humans.append(Human("confirm", "approve", ["approval"], "confirmed", question="Sure?"))
+        human_actions.append(HumanAction("confirm", "approve", ["approval"], "confirmed", question="Sure?"))
         edges.append(("approve", "confirm"))
     llm = MockLLM(lambda p: "a draft")
-    return people(agents, edges, humans, inputs={"topic": "text"}, llm=llm)
+    return people(agents, edges, human_actions, inputs={"topic": "text"}, llm=llm)
 
 
 def test_pauses_inside_boxes() -> None:
-    box = Box("review", boxed_inner(), reads={"topic": "query"}, writes={"approval": "approval"})
+    box = MASModule("review", boxed_inner(), reads={"topic": "query"}, writes={"approval": "approval"})
     side = Agent("side", "Side {query}", "aside")
-    mas = people([side], boxes=[box], outputs={"approval": "json", "aside": "text"}, llm=MockLLM(lambda p: "s"))
+    mas = people([side], modules=[box], outputs={"approval": "json", "aside": "text"}, llm=MockLLM(lambda p: "s"))
     paused = run(mas, {"query": "q"}, "n1")
     assert open_ids(paused) == ["n1/review/1/approve/1"]
     assert paused.agents == ("side",)
@@ -288,15 +298,15 @@ def test_pauses_inside_boxes() -> None:
     assert done.status == "ok"
     assert done.outputs["approval"]["approved"] is True
     (record,) = done["review"]
-    assert record.kind == "box"
+    assert record.kind == "module"
     assert [(r.agent, r.kind) for r in cast("Any", record.inner).records] == [
         ("writer", "agent"),
-        ("approve", "human"),
+        ("approve", "human_action"),
     ]
 
-    # A second human inside the box pauses it again.
-    twice = Box("review", boxed_inner(confirm=True), reads={"topic": "query"}, writes={"confirmed": "confirmed"})
-    mas = people([], boxes=[twice], outputs={"confirmed": "json"})
+    # A second human inside the module pauses it again.
+    twice = MASModule("review", boxed_inner(confirm=True), reads={"topic": "query"}, writes={"confirmed": "confirmed"})
+    mas = people([], modules=[twice], outputs={"confirmed": "json"})
     run(mas, {"query": "q"}, "b4")
     second = resume(mas, "b4", {"b4/review/1/approve/1": {"approved": True, **TOM}})
     assert open_ids(second) == ["b4/review/1/confirm/1"]
@@ -304,22 +314,22 @@ def test_pauses_inside_boxes() -> None:
     assert done.outputs["confirmed"]["approved"] is True
     assert len(done["review"]) == 1
 
-    # A box in a chain item.
+    # A module in a chain item.
     each = {"review": "page in pages"}
-    box_in = Box("review", boxed_inner(), reads={"topic": "page"}, writes={"approval": "approval"})
+    box_in = MASModule("review", boxed_inner(), reads={"topic": "page"}, writes={"approval": "approval"})
     chain = people(
-        [], boxes=[box_in], each=each, inputs={"pages": "list of text"}, outputs={"approval": "list of json"}
+        [], modules=[box_in], each=each, inputs={"pages": "list of text"}, outputs={"approval": "list of json"}
     )
     paused = run(chain, {"pages": ["x", "y"]}, "n2")
-    assert sorted(open_ids(paused)) == ["n2/review/1/approve/0/1", "n2/review/1/approve/1/1"]  # box visit, item
+    assert sorted(open_ids(paused)) == ["n2/review/1/approve/0/1", "n2/review/1/approve/1/1"]  # module visit, item
     done = resume(chain, "n2", {qid: {"approved": True, **TOM} for qid in open_ids(paused)})
     assert [a["approved"] for a in done.outputs["approval"]] == [True, True]
 
-    # A box visited twice in a loop: each visit pauses on its own thread.
+    # A module visited twice in a loop: each visit pauses on its own thread.
     again = Agent("again", "Again {approval}", "verdict", ["approval"], output_type="json")
     loop = Edge("again", "review", EdgeKind.WHILE, when="not approval.approved", max_visits=2)
     edges: list[tuple[str, str] | Edge] = [("review", "again"), loop, Edge("again", END, EdgeKind.ELSE)]
-    looped = people([again], edges, boxes=[box], llm=MockLLM(lambda p: "{}"), outputs={"verdict": "json"})
+    looped = people([again], edges, modules=[box], llm=MockLLM(lambda p: "{}"), outputs={"verdict": "json"})
     paused = run(looped, {"query": "q"}, "n3")
     assert open_ids(paused) == ["n3/review/1/approve/1"]
     second = resume(looped, "n3", {"n3/review/1/approve/1": {"approved": False, **TOM}})
@@ -350,7 +360,8 @@ def test_resume_after_a_restart(tmp_path: Path) -> None:
     )
     assert json.loads(child.stdout.strip().splitlines()[-1]) == {"status": "paused", "open": ["r9/approve/1"]}
 
-    changed = restartable(path, frozen=["writer"])
+    changed = restartable(path)
+    changed.agents["writer"].detached = True  # a detached writer is another system
     with pytest.raises(ValueError, match="resume with that system"):
         resume(changed, "r9", {"r9/approve/1": {"approved": True, **TOM}})
     time.sleep(0.3)  # the wait counts against no wall limit
@@ -419,7 +430,9 @@ def test_timeouts_take_the_default() -> None:
 def test_forms_and_answer_checks() -> None:
     # ask: the options come from a read's path
     llm = MockLLM(lambda p: '{"title": "T", "choices": ["short", "long"]}')
-    pick = Human("pick", "ask", ["outline"], "picked", question="Which for {outline.title}?", options="outline.choices")
+    pick = HumanAction(
+        "pick", "ask", ["outline"], "picked", question="Which for {outline.title}?", options="outline.choices"
+    )
     writer = Agent("writer", "Outline {query}", "outline", output_type="json")
     asked = people([writer], [("writer", "pick")], [pick], llm=llm)
     paused = run(asked, {"query": "q"}, "f1")
@@ -435,7 +448,7 @@ def test_forms_and_answer_checks() -> None:
     assert store.question("f1/pick/1").answer["option"] == "long"  # type: ignore[union-attr,index]
 
     # judge: a pick names one of the pair, or a tie
-    duel = Human("duel", "judge", ["a", "b"], "verdict", question="Which is better?", pair=["a", "b"])
+    duel = HumanAction("duel", "judge", ["a", "b"], "verdict", question="Which is better?", pair=["a", "b"])
     pair = [Agent("a", "A {query}", "a"), Agent("b", "B {query}", "b")]
     judged = people(pair, [("a", "duel"), ("b", "duel")], [duel], llm=MockLLM(lambda p: p[0]))
     paused = run(judged, {"query": "q"}, "f2")
@@ -444,7 +457,7 @@ def test_forms_and_answer_checks() -> None:
     assert json.loads(verdict)["pick"] == "tie"
 
     # edit: the edited value is written with its type
-    fix = Human("fix", "edit", ["draft"], {"answer": "fixed", "value": "final"}, question="Fix it", edits="draft")
+    fix = HumanAction("fix", "edit", ["draft"], {"answer": "fixed", "value": "final"}, question="Fix it", edits="draft")
     edited = people(
         [Agent("writer", "Write {query}", "draft")], [("writer", "fix")], [fix], llm=MockLLM(lambda p: "old")
     )
@@ -487,21 +500,21 @@ def test_askers_and_unattended_runs(tmp_path: Path) -> None:
     assert defaulted.outputs["approval"]["timed_out"] is True
     assert defaulted.outputs["held"] == "hold"
     failed = gated().run("q")
-    assert failed.error == "Unanswered: human node 'approve' got no answer in an unattended run"
+    assert failed.error == "Unanswered: human action 'approve' got no answer in an unattended run"
     assert [r.agent for r in failed.records] == ["writer"]
-    split = Step("split", "pages", reads={"query": "query"}, writes={"pages": "plan"})
+    split = Code("split", "pages", reads={"query": "query"}, writes={"pages": "plan"})
     itemized = MAS(
         [Agent("drafter", "Draft {page}", "draft", ["page"])],
         [("split", "drafter"), ("drafter", "fix")],
-        steps=[split],
-        humans=[Human("fix", "approve", ["draft"], "fixed")],
+        code_nodes=[split],
+        human_actions=[HumanAction("fix", "approve", ["draft"], "fixed")],
         each={"drafter": {"item": "page", "in": "plan"}, "fix": "page in plan"},
         tools=[pages],
         outputs={"fixed": "list of json"},
         llm=MockLLM(lambda p: p),
     )
     (failed,) = itemized.run_batch(["q"])  # an item's open question fails the run, not just the item
-    assert failed.error == "Unanswered: human node 'fix' got no answer in an unattended run"
+    assert failed.error == "Unanswered: human action 'fix' got no answer in an unattended run"
 
 
 @tool
@@ -520,7 +533,7 @@ def test_early_answers(monkeypatch: pytest.MonkeyPatch) -> None:
         return prompt.split(maxsplit=1)[0]
 
     agents = [Agent("n1", "n1 {query}", "n1_out"), Agent("n2", "n2 {n1_out}", "n2_out", ["n1_out"])]
-    ask = Human("approve", "approve", ["query"], "approval", question="Go on with {query}?")
+    ask = HumanAction("approve", "approve", ["query"], "approval", question="Go on with {query}?")
     outputs = {"approval": "json", "n2_out": "text"}
     holder["mas"] = mas = people(agents, [("n1", "n2")], [ask], llm=MockLLM(late), outputs=outputs)
     events: list[Event] = []
@@ -610,13 +623,13 @@ def test_checkpoints_hold_xmas_types(
         llm=llm,
         tools=[look],
     )
-    box = Box("review", inner, reads={"query": "query"}, writes={"approval": "approval"})
+    box = MASModule("review", inner, reads={"query": "query"}, writes={"approval": "approval"})
     path = tmp_path / "runs.db"
     with caplog.at_level(logging.DEBUG):
-        mas = people([], boxes=[box], store=Store(path), outputs={"approval": "json"})
+        mas = people([], modules=[box], store=Store(path), outputs={"approval": "json"})
         paused = run(mas, {"query": "q"}, "x1")
         assert open_ids(paused) == ["x1/review/1/approve/1"]
-        again = people([], boxes=[box], store=Store(path), outputs={"approval": "json"})
+        again = people([], modules=[box], store=Store(path), outputs={"approval": "json"})
         done = resume(again, "x1", {"x1/review/1/approve/1": {"approved": True, **TOM}})
     inner_trace = cast("Any", done["review"][0].inner)
     (found,) = inner_trace["finder"]

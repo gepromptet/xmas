@@ -8,7 +8,7 @@ events to a listener, and writes its records, events and model calls to the
 run's :class:`~xmas.store.RunLog`, when it has one.
 
 A run is stopped through its meter (:meth:`RunMeter.stop`, found by run id in
-:data:`RUNNING`): no call, step or item starts after that, waits for a free slot
+:data:`RUNNING`): no call, code node or item starts after that, waits for a free slot
 end, and a call in flight sees the stop on its :func:`cancel_flag` and is cut.
 The same flag cuts the calls of a ``first of`` contestant once another one won.
 """
@@ -123,7 +123,7 @@ class Budget:
     starts no call. A cost limit that cannot be checked, because a call reported
     no cost and the model has no price, refuses the next call instead of silently
     not binding. A negative or NaN limit is refused. ``max_parallel_calls`` caps
-    the model calls in flight at once, across every branch, box and item of the
+    the model calls in flight at once, across every branch, module and item of the
     run; a call waits for a free slot. It is an integer of at least ``1``.
     """
 
@@ -286,7 +286,7 @@ class RunMeter:
             self.started = True
 
     def adopt(self, system: object, into: object | None = None) -> None:
-        """Let a nested system, such as a box's, run on this meter: one budget for both.
+        """Let a nested system, such as a module's, run on this meter: one budget for both.
 
         Its records are kept apart, or with those of ``into``, a system this
         meter owns or adopted, as a chain's items keep theirs with the system
@@ -337,7 +337,7 @@ class RunMeter:
             self.calls += 1
 
     def check_boundary(self) -> None:
-        """Check the stop and the wall and cost limits before work that makes no model call, such as a step."""
+        """Check the stop and the wall and cost limits before work that makes no model call, such as a code node."""
         with self.lock:
             self.flag().check()
             self.check(count_calls=False)
@@ -480,7 +480,7 @@ class VisitMeter:
     Every call counts on the run's meter; the visit also keeps the metadata of
     its own finished calls (``metas``, ``None`` for a model that gives none),
     so a visit that fails after paid attempts still records what they cost. A
-    box's visit keeps the trace of its inner system when that fails (``inner``).
+    module's visit keeps the trace of its inner system when that fails (``inner``).
     ``node`` names the visited node in the run's log of calls.
     """
 

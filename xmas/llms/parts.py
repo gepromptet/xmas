@@ -136,7 +136,7 @@ def to_content(parts: Sequence[Part]) -> list[dict[str, Any]]:
     Raises:
         ValueError: For a part over :data:`~xmas.media.MAX_PART_BYTES`, a remote
             audio ref, an audio type other than wav and mp3, or a document,
-            table or file ref, which a model reads through a conversion step.
+            table or file ref, which a model reads through a conversion code node.
     """
     content: list[dict[str, Any]] = []
     for part in parts:
@@ -154,7 +154,7 @@ def to_content(parts: Sequence[Part]) -> list[dict[str, Any]]:
             content.append({"type": "input_audio", "input_audio": {"data": encoded(part), "format": audio_format}})
         else:
             raise ValueError(
-                f"{marker(part)}: a model reads a {part.kind} through a conversion step, never as a content part"
+                f"{marker(part)}: a model reads a {part.kind} through a conversion code node, never as a content part"
             )
     return content
 

@@ -8,7 +8,7 @@ information for the person reading the trace, not a rule. It reads four things:
   ``unfilled``, ``leak``, ``long``, ``short``, ``item_over_budget``;
 - per ``while`` edge, how often the loop was taken and whether its cap was hit;
 - per run, each limit the budget sets, with what the run spent of it, and the
-  time human nodes waited for their answers;
+  time human actions waited for their answers;
 - per ``for each`` chain, its items, the failed ones and what each cost.
 """
 
@@ -105,7 +105,7 @@ class Health:
             ``{"taken": n, "cap_hit": bool}``.
         budget: Per limit the budget sets (``"calls"``, ``"cost_usd"``,
             ``"wall_s"``): ``{"spent": x, "limit": y}``; and ``"waited_s"``,
-            ``{"spent": x}``, the seconds human nodes waited for answers,
+            ``{"spent": x}``, the seconds human actions waited for answers,
             which no wall limit counts.
         items: Per ``for each`` chain, keyed by its head: ``{"items": n,
             "failed": k, "cost_usd": [...]}``, one cost per item in item order,

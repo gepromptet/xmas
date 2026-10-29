@@ -93,13 +93,13 @@ class CantanteOptimizer(MASOptimizer):
     def propose(self) -> list[MAS]:
         """Run one round of every agent's optimizer and return what they settled on.
 
-        A frozen agent gets no optimizer and keeps its prompt. The incumbent
+        A detached agent gets no optimizer and keeps its prompt. The incumbent
         comes back with the system built from each agent's best prompt, so the
         proposal is measured against it on the real task rather than trusting
         attributed credit to have been right.
 
         Raises:
-            ValueError: If every agent is frozen.
+            ValueError: If every agent is detached.
         """
         board = Board()
         optimizers: dict[str, BaseOptimizer] = {}

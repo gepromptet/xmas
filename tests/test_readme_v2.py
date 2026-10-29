@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from xmas import MAS, Agent, Step
+from xmas import MAS, Agent, Code
 from xmas.bundle import read
 from xmas.tools import tool
 
@@ -49,7 +49,7 @@ def count_words(draft: str) -> int:
 
 
 def version_2_system(llm: MockLLM) -> MAS:
-    """The system of 'Version 2: a step and a JSON judge'."""
+    """The system of 'Version 2: a code node and a JSON judge'."""
     writer = Agent("writer", prompt="Write a short answer to: {query}", output="draft")
     judge = Agent(
         "judge",
@@ -61,14 +61,14 @@ def version_2_system(llm: MockLLM) -> MAS:
     )
     return MAS(
         [writer, judge],
-        steps=[Step("count", uses="count_words")],
+        code_nodes=[Code("count", uses="count_words")],
         edges=[("writer", "count"), ("count", "judge")],
         tools=[count_words],
         llm=llm,
     )
 
 
-# ------------------------------------------------- Version 2: a step and a JSON judge
+# ------------------------------------------------- Version 2: a code node and a JSON judge
 
 
 def test_the_version_2_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None:
@@ -85,7 +85,7 @@ def test_the_version_2_block_runs_as_written(capsys: pytest.CaptureFixture[str])
     )
     mas = MAS(
         [writer, judge],
-        steps=[Step("count", uses="count_words")],
+        code_nodes=[Code("count", uses="count_words")],
         edges=[("writer", "count"), ("count", "judge")],
         tools=[count_words],
         llm=llm,
@@ -94,11 +94,11 @@ def test_the_version_2_block_runs_as_written(capsys: pytest.CaptureFixture[str])
     trace = mas.run("Why is the sky blue?")
     print(trace.output)  # {"fits": true}
     print([(record.agent, record.kind) for record in trace.records])
-    # [('writer', 'agent'), ('count', 'step'), ('judge', 'agent')]
+    # [('writer', 'agent'), ('count', 'code'), ('judge', 'agent')]
 
     assert capsys.readouterr().out.splitlines() == [
         '{"fits": true}',
-        "[('writer', 'agent'), ('count', 'step'), ('judge', 'agent')]",
+        "[('writer', 'agent'), ('count', 'code'), ('judge', 'agent')]",
     ]
     shown = trace["judge"][0].rendered_prompt
     assert shown.startswith(f"Question: {QUERY}\nDraft, 4 words: {DRAFT}\nJudge the draft.\n\nAnswer with one JSON")

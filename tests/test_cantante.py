@@ -305,6 +305,7 @@ def test_agents_sharing_a_prompt_are_optimized_as_one() -> None:
     Scripted.candidates = {"first": [f"one {GOOD} {{query}}", "judge {query}"]}
     candidates = CantanteOptimizer(mas, task(), UniformAttributor(), Scripted, inner_steps=1).propose()
     assert [c.agents["second"].prompt for c in candidates] == ["judge {query}", f"one {GOOD} {{query}}"]
-    frozen = MAS(agents, [("first", "second")], llm=llm, prompt_names={"first": "j", "second": "j"}, frozen=["second"])
-    with pytest.raises(ValueError, match="frozen"):
-        movable_agents(frozen)
+    held = [agents[0], agents[1].copy(detached=True)]
+    detached = MAS(held, [("first", "second")], llm=llm, prompt_names={"first": "j", "second": "j"}, version=2)
+    with pytest.raises(ValueError, match="detached"):
+        movable_agents(detached)

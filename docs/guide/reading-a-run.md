@@ -18,14 +18,14 @@ print(trace.health.loops)  # {'judge -> writer': {'taken': 2, 'cap_hit': True}}
 `outputs` it wrote and the `rendered_prompt` it sent. It also holds `latency_s`,
 `cost_usd`, `tokens`, `finish_reason`, `error_kind` and `served_model`, the model that
 actually answered. For a node with conditional edges, `route` names where the visit sent
-the run. A step's record has kind `step`.
+the run. A code node's record has kind `code`.
 
 A run ends with a status: `ok`, `failed` or `over_budget`. A failed run keeps
 every record that finished before the failure, and `trace.error_kind` says what kind it
 was. Cost is never guessed as zero. It comes from the endpoint's response, or from a
 price you give the model (`APILLM(price=TokenPrice(...))`, from `xmas.llms.meta`), or
 it stays `None`. A sum with one unknown part is unknown too, so `trace.cost_usd` is
-`None` when any record's cost is. A step costs `0.0`, since it makes no model call.
+`None` when any record's cost is. A code node costs `0.0`, since it makes no model call.
 
 ## Health
 
@@ -63,7 +63,7 @@ print(spent["intern"][0].outputs)  # the intern's draft is kept
 
 `Budget` also takes `max_cost_usd` and `max_wall_s`. A limit of 0 spends nothing. Calls
 already in flight may overshoot by one call per branch. `max_parallel_calls` caps how
-many model calls are in flight at once, across branches, boxes and chain items. A cost
+many model calls are in flight at once, across branches, modules and chain items. A cost
 limit refuses the next call when the last one reported no cost and its model has no
 price, because an unknown cost cannot be checked.
 

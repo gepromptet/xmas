@@ -12,12 +12,12 @@ record, event and model call to the run's :class:`~xmas.store.RunLog` as it
 happens, and the run's start and end are written beside them.
 
 In a version 2 system values are typed and render by
-:func:`~xmas.values.render_value`; steps run callables; a json agent answers in
+:func:`~xmas.values.render_value`; code nodes run callables; a json agent answers in
 its answer form, with one retry; an agent reading an image or audio sends it to
 its model as a content part, and an agent writing an image keeps the model's
 picture in :func:`~xmas.media.store`; a node with conditional or error edges
 routes by a :class:`Decision` after each visit; a join is a barrier that runs
-once per pass, after all its groups, where version 1 defers; and a box runs a
+once per pass, after all its groups, where version 1 defers; and a module runs a
 whole inner system as one node, on the outer run's meter.
 
 A ``for each`` chain compiles to three nodes around its head ``h``:
@@ -28,7 +28,7 @@ record a chain's item makes carries the item, and records keep the order of the
 items, however the items finish; an item resumed after a pause adds its records
 when it ends, after those of the items that ended before the pause.
 
-A system with people in it (a :class:`~xmas.human.Human` at any depth) can
+A system with people in it (a :class:`~xmas.human.HumanAction` at any depth) can
 pause. A human ``h`` compiles to two nodes: ``h`` asks (it fills the question,
 keeps it in the run's :class:`~xmas.store.Store` and calls the host's asker
 once) and the deferred ``h.wait`` takes the answer, so every other branch ends
@@ -36,7 +36,7 @@ or reaches its own question first. A wait without an answer interrupts the
 graph; the run returns a trace with status ``paused`` and the open questions in
 ``Trace.pause``, its checkpoints in the store under the run's id, and
 :func:`resume` goes on from there, in this process or after a restart. A chain
-or box holding a human runs its inner system as a root run of its own thread,
+or module holding a human runs its inner system as a root run of its own thread,
 so a pause inside it returns instead of holding the outer step; the
 container's deferred ``wait`` node resumes only the paused threads.
 """
@@ -67,7 +67,7 @@ from promptolution.utils.token_counter import get_token_counter
 
 from xmas.agent import Agent
 from xmas.budget import RUNNING, RunMeter, VisitMeter, contestant
-from xmas.check import SENT, step_maps
+from xmas.check import SENT, code_maps
 from xmas.edges import ANY_ERROR, Edge, EdgeKind
 from xmas.errors import (
     RUN_ENDS,
@@ -82,19 +82,19 @@ from xmas.errors import (
 )
 from xmas.graph import END, START, back_edges, join_nodes
 from xmas.health import summarize
-from xmas.human import Asker, Human, Pause, Question, answer_value, question_id
+from xmas.human import Asker, HumanAction, Pause, Question, answer_value, question_id
 from xmas.llms.meta import SupportsImages, SupportsMeta, SupportsParts, supports_meta, supports_parts
 from xmas.llms.parts import Part, render_parts
 from xmas.media import store
-from xmas.nodes import Box, Step
+from xmas.nodes import Code, MASModule
 from xmas.predicates import Context, Predicate
 from xmas.prompts import safe_format
 from xmas.schemas import RETRY_NOTE, AnswerForm, FormError, compile_form
 from xmas.spec import VERSION_2
 from xmas.store import RunLog, Store
-from xmas.tools import run_step, run_tool_loop
+from xmas.tools import run_code, run_tool_loop
 from xmas.trace import AgentRecord, Event, Rejected, TokenUsage, ToolCall, Trace
-from xmas.values import JSON, TEXT, ValueType, check_value, coerce_media, media_kind, parse_type, plain, render_value
+from xmas.values import JSON, TEXT, ValueType, check_value, coerce_ref, parse_type, plain, ref_kind, render_value
 
 if TYPE_CHECKING:  # pragma: no cover
     from promptolution.llms.base_llm import BaseLLM
@@ -156,7 +156,7 @@ ASKING_KEY = "xmas_asking"
 
 RACES_KEY = "xmas_races"
 """Key of a run's own prefix for its ``first of`` race keys, in ``config["configurable"]`` of a system with races:
-a box's or a chain item's inner run races on the outer run's meter, under keys of its own."""
+a module's or a chain item's inner run races on the outer run's meter, under keys of its own."""
 
 Prompt = str | list[Part]
 """What an agent sends its model: one text, or content parts when it reads an image or audio."""
@@ -208,11 +208,11 @@ class ChainState(MASState):
 
 
 class AskState(MASState):
-    """The state of a system with human nodes or pausing boxes.
+    """The state of a system with human actions or pausing modules.
 
     Attributes:
         asks: By node: a human's latest question (``Question.to_dict()``), or a
-            box's paused inner thread (``{"thread", "scope", "query"}``),
+            module's paused inner thread (``{"thread", "scope", "query"}``),
             ``None`` once it finished.
     """
 
@@ -220,7 +220,7 @@ class AskState(MASState):
 
 
 class ChainAskState(ChainState, AskState):
-    """The state of a system with chains and human nodes or pausing boxes."""
+    """The state of a system with chains and human actions or pausing modules."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -232,7 +232,7 @@ class Asking:
         asker: The host's asker, or ``None``.
         run_id: The run's id, the top-level thread.
         thread: The checkpoint thread of the system running now: the run's
-            id, or a chain item's or box's own thread under it.
+            id, or a chain item's or module's own thread under it.
         scope: What the questions asked here start their ids with.
         unattended: A run no one can answer later (``run``, ``run_batch``):
             an unanswered question takes its default or fails the run.
@@ -249,10 +249,10 @@ class Asking:
 
 
 class Paused(GraphBubbleUp):
-    """A box's inner run paused: the box's wait node finishes the visit once its questions are answered."""
+    """A module's inner run paused: the module's wait node finishes the visit once its questions are answered."""
 
     def __init__(self, marker: dict[str, Any]) -> None:
-        """Keep what the wait node needs: the inner thread, its question scope and the box's query."""
+        """Keep what the wait node needs: the inner thread, its question scope and the module's query."""
         super().__init__(marker)
         self.marker = marker
 
@@ -284,9 +284,9 @@ def current_asking() -> Asking:
 
 
 def pauses(mas: MAS) -> bool:
-    """Return whether a system can pause: it, or a chain or box in it at any depth, holds a human node."""
-    inner = [box.system for box in mas.boxes.values()] + [chain.system for chain in system_chains(mas).values()]
-    return bool(mas.humans) or any(pauses(system) for system in inner)
+    """Return whether a system can pause: it, or a chain or module in it at any depth, holds a human action."""
+    inner = [box.system for box in mas.modules.values()] + [chain.system for chain in system_chains(mas).values()]
+    return bool(mas.human_actions) or any(pauses(system) for system in inner)
 
 
 def system_chains(mas: MAS) -> dict[str, Chain]:
@@ -396,8 +396,8 @@ def wrap(mas: MAS, name: str, body: NodeBody, role: NodeRole = PLAIN_ROLE) -> Ca
     the visit takes it and writes only ``error`` (``{kind, message, node}``,
     when ``role.writes_error``); otherwise the error goes on. Version 1 raises.
 
-    A box whose inner run paused keeps no record yet: the node writes the
-    paused thread under ``asks`` for the box's wait node, which finishes the
+    A module whose inner run paused keeps no record yet: the node writes the
+    paused thread under ``asks`` for the module's wait node, which finishes the
     visit (``role.starts`` false: the visit has started already), as a human's
     wait node finishes the visit its asking node started.
 
@@ -428,7 +428,7 @@ def wrap(mas: MAS, name: str, body: NodeBody, role: NodeRole = PLAIN_ROLE) -> Ca
     return node
 
 
-KINDS = {Agent: "agent", Step: "step", Box: "box", Human: "human"}
+KINDS = {Agent: "agent", Code: "code", MASModule: "module", HumanAction: "human_action"}
 """The record kind of each node class."""
 
 
@@ -532,13 +532,13 @@ class Visit:
     def failed_record(self, error: BaseException, kind: ErrorKind, target: str | None) -> AgentRecord:
         """Return the record of a version 2 visit that failed: no outputs, the route taken, and what it paid.
 
-        The cost and tokens are those of every call the visit made; a step's are
-        ``0``, and a box's those of its inner trace, which the record holds.
+        The cost and tokens are those of every call the visit made; a code node's are
+        ``0``, and a module's those of its inner trace, which the record holds.
         """
         node, visit = self.mas.nodes[self.name], self.visit
         meta = visit.meta
         paid: dict[str, Any] = meta.record_fields() if meta is not None else {}
-        if isinstance(node, Step):
+        if isinstance(node, Code):
             paid["cost_usd"] = 0.0
         elif visit.inner is not None:
             paid.update(paid_inside(visit.inner))
@@ -673,7 +673,7 @@ def render_prompt(
         placeholder: render_value(values.get(name), types.get(name, TEXT), present=name in values)
         for placeholder, name in agent.reads.items()
     }
-    shown = {placeholder for placeholder, name in agent.reads.items() if media_kind(types.get(name, TEXT)) in SENT}
+    shown = {placeholder for placeholder, name in agent.reads.items() if ref_kind(types.get(name, TEXT)) in SENT}
     if not shown:
         prompt = safe_format(template, inputs)
         return prompt, prompt, inputs
@@ -695,7 +695,7 @@ def agent_body(
     """
     written = parse_type(agent.output_type)
     form = compile_form(agent.schema) if written == JSON else None
-    paints = media_kind(written) == "image"
+    paints = ref_kind(written) == "image"
     tools = mas.resolve_tools(agent) if agent.tools else None
     batch_error = mas.version != VERSION_2
     reads_run = mas.version == VERSION_2 and "run" in agent.reads.values()
@@ -766,23 +766,23 @@ def agent_body(
     return body
 
 
-def node_body(mas: MAS, node: Agent | Step | Box, types: Mapping[str, ValueType]) -> NodeBody:
-    """Build what an agent, a step or a box does in one visit."""
+def node_body(mas: MAS, node: Agent | Code | MASModule, types: Mapping[str, ValueType]) -> NodeBody:
+    """Build what an agent, a code node or a module does in one visit."""
     if isinstance(node, Agent):
         llm = mas.resolve_llm(node)
         return agent_body(mas, node, llm, get_token_counter(llm), types)
-    return step_body(mas, node, types) if isinstance(node, Step) else box_body(node, types)
+    return code_body(mas, node, types) if isinstance(node, Code) else module_body(node, types)
 
 
-def step_body(mas: MAS, step: Step, types: Mapping[str, ValueType]) -> NodeBody:
-    """Build what a step does in one visit: read its parameters, run its callable, write.
+def code_body(mas: MAS, step: Code, types: Mapping[str, ValueType]) -> NodeBody:
+    """Build what a code node does in one visit: read its parameters, run its callable, write.
 
-    The meter's wall and cost limits are checked first; a step makes no model
+    The meter's wall and cost limits are checked first; a code node makes no model
     call, so it counts none. A parameter whose value is not in the state is
     left out and takes its default.
     """
     spec, source = mas.resolve_callable(step)
-    read_map, write_map = step_maps(step, spec)
+    read_map, write_map = code_maps(step, spec)
     reads_run = "run" in read_map.values()
 
     def body(state: MASState, meter: VisitMeter) -> tuple[AgentRecord, dict[str, Any]]:
@@ -795,7 +795,7 @@ def step_body(mas: MAS, step: Step, types: Mapping[str, ValueType]) -> NodeBody:
             if name in values:
                 arguments[parameter] = values[name]
         try:
-            produced = run_step(spec, source, arguments)
+            produced = run_code(spec, source, arguments)
         except BadFormat as error:
             raise BadFormat(step.name, error.problems, error.meta) from error
         writes = {write_map[write]: value for write, value in produced.items()}
@@ -808,8 +808,8 @@ def step_body(mas: MAS, step: Step, types: Mapping[str, ValueType]) -> NodeBody:
             inputs=inputs,
             outputs=outputs,
             raw_response=raw(outputs, writes),
-            cost_usd=0.0,  # a step makes no model call
-            kind="step",
+            cost_usd=0.0,  # a code node makes no model call
+            kind="code",
         )
         return record, writes
 
@@ -821,18 +821,18 @@ def raw(outputs: dict[str, str], writes: dict[str, Any]) -> str:
     return next(iter(outputs.values())) if len(outputs) == 1 else render_value(plain(writes), JSON)
 
 
-def box_body(box: Box, types: Mapping[str, ValueType], *, resumes: bool = False) -> NodeBody:
-    """Build what a box does in one visit: run its inner system from the mapped values.
+def module_body(box: MASModule, types: Mapping[str, ValueType], *, resumes: bool = False) -> NodeBody:
+    """Build what a module does in one visit: run its inner system from the mapped values.
 
     The inner system runs on the outer run's meter, which adopts it, so its
-    calls count against the outer budget, and on the chain item the box works
-    on, if any. Its failure raises out of the box, so the box's own error edges
+    calls count against the outer budget, and on the chain item the module works
+    on, if any. Its failure raises out of the module, so the module's own error edges
     route by the inner error's kind; the visit keeps the inner trace so far for
-    the box's failed record.
+    the module's failed record.
 
     An inner system that can pause runs as a root run of its own thread,
     ``<thread>/<box>/<visit>``; a pause there raises :class:`Paused`, and the
-    box's wait node (``resumes``) resumes the thread once its questions are
+    module's wait node (``resumes``) resumes the thread once its questions are
     answered and finishes the visit.
     """
     inner: MAS = box.system
@@ -867,7 +867,7 @@ def box_body(box: Box, types: Mapping[str, ValueType], *, resumes: bool = False)
                 result = inner.compiled.invoke(initial_state(given, inner.prompts()), config=config)
         except GraphBubbleUp:
             raise
-        except Exception as error:  # a box in a chain: its siblings' inner records sit on the same list
+        except Exception as error:  # a module in a chain: its siblings' inner records sit on the same list
             visit.inner = failed_trace(inner, query, error, run, records_since(run, inner, kept, item))
             raise
         trace, produced = trace_from_state(inner, query, result, run), result["values"]
@@ -888,7 +888,7 @@ def box_body(box: Box, types: Mapping[str, ValueType], *, resumes: bool = False)
             outputs=outputs,
             usage=trace.usage,
             raw_response=raw(outputs, writes),
-            kind="box",
+            kind="module",
             inner=trace,
             **paid_inside(trace),
         )
@@ -897,8 +897,8 @@ def box_body(box: Box, types: Mapping[str, ValueType], *, resumes: bool = False)
     return body
 
 
-def box_wait(name: str, finish: Callable[[MASState], dict[str, Any]]) -> Callable[[MASState], dict[str, Any]]:
-    """Build a pausing box's wait node: it finishes a visit whose inner run paused, and passes any other by."""
+def module_wait(name: str, finish: Callable[[MASState], dict[str, Any]]) -> Callable[[MASState], dict[str, Any]]:
+    """Build a pausing module's wait node: it finishes a visit whose inner run paused, and passes any other by."""
 
     def wait(state: MASState) -> dict[str, Any]:
         marker = cast("AskState", state).get("asks", {}).get(name)
@@ -908,10 +908,10 @@ def box_wait(name: str, finish: Callable[[MASState], dict[str, Any]]) -> Callabl
     return wait
 
 
-def human_nodes(
-    mas: MAS, human: Human, types: Mapping[str, ValueType]
+def human_action_nodes(
+    mas: MAS, human: HumanAction, types: Mapping[str, ValueType]
 ) -> tuple[Callable[[MASState], dict[str, Any]], NodeBody]:
-    """Build a human node's asking node, and the body of its deferred wait node, which :func:`wrap` finishes.
+    """Build a human action's asking node, and the body of its deferred wait node, which :func:`wrap` finishes.
 
     The asking node fills the question from the state, keeps it in the store,
     calls the host's asker once, and keeps an answer given at once. The wait
@@ -970,7 +970,7 @@ def human_nodes(
             outputs={written: render_value(value, types.get(written, JSON)) for written, value in writes.items()},
             raw_response=json.dumps(answer, ensure_ascii=False),
             cost_usd=0.0,
-            kind="human",
+            kind="human_action",
             wait_s=wait_s,
         )
         return record, writes
@@ -1001,7 +1001,7 @@ def question_answer(asking: Asking, question: Question) -> dict[str, Any] | None
     if question.due(datetime.now(UTC)) or (asking.unattended and question.default is not None):
         return keep(asking.store, question, question.default or {}, timed_out=True)
     if asking.unattended:
-        raise Unanswered(f"human node {question.node!r} got no answer in an unattended run")
+        raise Unanswered(f"human action {question.node!r} got no answer in an unattended run")
     return None
 
 
@@ -1058,7 +1058,7 @@ def alone(
 
 
 def paid_inside(trace: Trace) -> dict[str, Any]:
-    """Return a box record's cost and tokens: its inner records' summed, ``None`` when any of them is unknown."""
+    """Return a module record's cost and tokens: its inner records' summed, ``None`` when any of them is unknown."""
     tokens = [record.tokens for record in trace.records]
     known = cast("list[TokenUsage]", tokens)
     return {"cost_usd": trace.cost_usd, "tokens": None if not tokens or None in tokens else sum(known[1:], known[0])}
@@ -1136,8 +1136,8 @@ def context(mas: MAS, name: str, state: MASState, writes: dict[str, Any], meter:
         visits[head] = passes.get(head, {}).get("pass", 0)
 
     def call(function: str, args: tuple[Any, ...]) -> bool:
-        spec, source = mas.resolve_callable(Step(function, function))
-        produced = run_step(spec, source, dict(zip(spec.reads, args, strict=True)))
+        spec, source = mas.resolve_callable(Code(function, function))
+        produced = run_code(spec, source, dict(zip(spec.reads, args, strict=True)))
         return cast("bool", next(iter(produced.values())))
 
     return Context(
@@ -1275,7 +1275,7 @@ def wire_v2(
 
     Each chain becomes its three nodes (:func:`add_chain`); edges into its head
     land on the first, edges out of it leave from the last. Edges out of a
-    human or a pausing box leave from its wait node (``waits``).
+    human or a pausing module leave from its wait node (``waits``).
     """
     chains = system_chains(mas)
     for chain in chains.values():
@@ -1519,21 +1519,21 @@ def compile_mas(mas: MAS) -> Any:
     with conditional or error edges gets a :class:`Decision`, a join is a
     barrier that runs its node once per pass, and a chain is its three nodes in
     place of its members, on :class:`ChainState`. A human is its asking node
-    and its deferred wait node (:func:`human_nodes`), and so is a box that can
-    pause (its own node and :func:`box_wait`); either adds the ``asks``
+    and its deferred wait node (:func:`human_action_nodes`), and so is a module that can
+    pause (its own node and :func:`module_wait`); either adds the ``asks``
     channel.
     """
     chains = system_chains(mas)
     members = {name for chain in chains.values() for name in chain.nodes}
-    humans = {name: human for name, human in mas.humans.items() if name not in members}
-    holding = [name for name, box in mas.boxes.items() if name not in members and pauses(box.system)]
-    if humans or holding:
+    human_actions = {name: human for name, human in mas.human_actions.items() if name not in members}
+    holding = [name for name, box in mas.modules.items() if name not in members and pauses(box.system)]
+    if human_actions or holding:
         schema: type[MASState] = ChainAskState if chains else AskState
     else:
         schema = ChainState if chains else MASState
     builder: StateGraph[MASState, Any, MASState, MASState] = StateGraph(schema)
     types = mas.info.types if mas.info is not None else {}
-    nodes: dict[str, Agent | Step | Box] = {**mas.agents, **mas.steps, **mas.boxes}
+    nodes: dict[str, Agent | Code | MASModule] = {**mas.agents, **mas.code_nodes, **mas.modules}
     bodies = {name: node_body(mas, node, types) for name, node in nodes.items() if name not in members}
 
     out = out_edges(mas) if mas.version == VERSION_2 else {}
@@ -1552,16 +1552,16 @@ def compile_mas(mas: MAS) -> Any:
         # mypy rejects a TypedDict schema here; langgraph documents it as the usage.
         builder.add_node(name, node, defer=name in deferred, input_schema=schema)  # type: ignore[arg-type]
     for name in holding:
-        body = box_body(mas.boxes[name], types, resumes=True)
+        body = module_body(mas.modules[name], types, resumes=True)
         role = NodeRole(decisions.get(name), writes_error=writes_error, starts=False, race=racing.get(name))
         finish = wrap(mas, name, body, role)
-        builder.add_node(f"{name}.wait", box_wait(name, finish), defer=True, input_schema=schema)  # type: ignore[arg-type]
-    for name, human in humans.items():
-        ask, wait = human_nodes(mas, human, types)
+        builder.add_node(f"{name}.wait", module_wait(name, finish), defer=True, input_schema=schema)  # type: ignore[arg-type]
+    for name, human in human_actions.items():
+        ask, wait = human_action_nodes(mas, human, types)
         finish = wrap(mas, name, wait, NodeRole(decisions.get(name), writes_error=writes_error, starts=False))
         builder.add_node(name, ask, input_schema=schema)  # type: ignore[arg-type]
         builder.add_node(f"{name}.wait", finish, defer=True, input_schema=schema)  # type: ignore[arg-type]
-    waits = {name: f"{name}.wait" for name in [*humans, *holding]}
+    waits = {name: f"{name}.wait" for name in [*human_actions, *holding]}
     for name, wait_node in waits.items():
         builder.add_edge(name, wait_node)
     if mas.version == VERSION_2:
@@ -1572,10 +1572,10 @@ def compile_mas(mas: MAS) -> Any:
 
 
 def reads(mas: MAS, value: str) -> bool:
-    """Return whether any agent, step or predicate of a version 2 system reads ``value``."""
+    """Return whether any agent, code node or predicate of a version 2 system reads ``value``."""
     reads = {path[0] for predicate in mas.checked().predicates.values() for path in predicate.paths()}
     reads.update(*(agent.reads.values() for agent in mas.agents.values()))
-    reads.update(*(step_maps(step, mas.resolve_callable(step)[0])[0].values() for step in mas.steps.values()))
+    reads.update(*(code_maps(step, mas.resolve_callable(step)[0])[0].values() for step in mas.code_nodes.values()))
     return value in reads
 
 
@@ -1655,7 +1655,7 @@ def failed_trace(
 def records_since(meter: RunMeter, mas: MAS, start: int, item: tuple[int, str | None] | None) -> list[AgentRecord]:
     """Return the records the meter kept for ``mas`` from ``start`` on, only ``item``'s when it names a chain item.
 
-    ``start`` skips the records of earlier runs on the meter (an adopted box
+    ``start`` skips the records of earlier runs on the meter (an adopted module
     system's earlier visits).
     """
     records = meter.records_of(mas)[start:]
@@ -1663,7 +1663,7 @@ def records_since(meter: RunMeter, mas: MAS, start: int, item: tuple[int, str | 
 
 
 def initial_state(query: str | Mapping[str, Any], prompts: Mapping[str, str]) -> MASState:
-    """Build the state a run starts from: the query, or a box's inner values."""
+    """Build the state a run starts from: the query, or a module's inner values."""
     values = {"query": query} if isinstance(query, str) else dict(query)
     return MASState(values=values, prompts=dict(prompts), records=[], routes={})
 
@@ -1707,7 +1707,7 @@ def run_state(
 
     A version 2 system takes exactly its inputs, each fitting its type; a
     :class:`~pathlib.Path` given for a media input is referenced where it is
-    (:func:`~xmas.values.coerce_media`), its sha256 checked whenever it is
+    (:func:`~xmas.values.coerce_ref`), its sha256 checked whenever it is
     read. A version 1 system takes text values, ``query`` among them as
     ``run`` gives it. ``on_event`` is called with each event of the run, on the
     run's threads. The trace's query is the ``query`` value, else the values as
@@ -1720,13 +1720,12 @@ def run_state(
     Raises:
         ValueError: Before any call, listing every input missing, extra or of
             the wrong type; or, for a system that can pause, when ``run_id``
-            holds a ``/`` (the threads of a run's items and boxes) or the
+            holds a ``/`` (the threads of a run's items and modules) or the
             store holds a run with it.
     """
     if mas.version == VERSION_2:
         values = {
-            name: coerce_media(value, mas.inputs[name]) if name in mas.inputs else value
-            for name, value in values.items()
+            name: coerce_ref(value, mas.inputs[name]) if name in mas.inputs else value for name, value in values.items()
         }
     check_inputs(mas, values)
     query = query_text(values)
@@ -1735,7 +1734,7 @@ def run_state(
     store = mas.runs()
     run_id = run_id or uuid.uuid4().hex
     if "/" in run_id:
-        raise ValueError(f"Run id {run_id!r} holds a '/', which names the threads of a run's items and boxes.")
+        raise ValueError(f"Run id {run_id!r} holds a '/', which names the threads of a run's items and modules.")
     graph_id = mas.describe()["id"]
     meter = RunMeter(mas.budget, owner=mas, listener=on_event, graph_id=graph_id, run_id=run_id)
     try:
@@ -1954,7 +1953,7 @@ def run_all(
 
     Each run is logged to the system's store when it is a file (:class:`~xmas.store.RunLog`).
     A system that can pause runs unattended here: its questions go to its
-    asker, and its chains and boxes keep their threads in that file, else
+    asker, and its chains and modules keep their threads in that file, else
     in a store of the batch's own, in memory.
 
     Raises:
@@ -2019,7 +2018,7 @@ def node_owner(mas: MAS, node: str) -> MAS:
     """Return the system that runs ``node``: ``mas``, or for a member of a ``for each`` chain the system an item runs.
 
     Raises:
-        ValueError: For a node inside a box, whose example belongs to the box's
+        ValueError: For a node inside a module, whose example belongs to the module's
             system, or a name that is no node at all.
     """
     for chain in system_chains(mas).values():
@@ -2027,16 +2026,18 @@ def node_owner(mas: MAS, node: str) -> MAS:
             return chain.system
     if node in mas.nodes:
         return mas
-    for box in mas.boxes.values():
+    for box in mas.modules.values():
         try:
             node_owner(box.system, node)
         except ValueError:
             continue
-        raise ValueError(f"node {node!r} sits inside box {box.name!r}: give the example to the box's system")
+        raise ValueError(f"node {node!r} sits inside module {box.name!r}: give the example to the module's system")
     raise ValueError(f"{node!r} is no node of the system; its nodes: {sorted(mas.nodes)}")
 
 
-def node_types(system: MAS, node: Agent | Step | Box | Human) -> tuple[dict[str, ValueType], dict[str, ValueType]]:
+def node_types(
+    system: MAS, node: Agent | Code | MASModule | HumanAction
+) -> tuple[dict[str, ValueType], dict[str, ValueType]]:
     """Return what a node reads and writes, ``{value: type}``, as one visit in ``system`` sees them.
 
     A version 1 system's values are text.
@@ -2044,10 +2045,10 @@ def node_types(system: MAS, node: Agent | Step | Box | Human) -> tuple[dict[str,
     types = system.info.types if system.info is not None else {}
     if isinstance(node, Agent):
         reads, writes = list(node.reads.values()), [node.output]
-    elif isinstance(node, Step):
-        read_map, write_map = step_maps(node, system.resolve_callable(node)[0])
+    elif isinstance(node, Code):
+        read_map, write_map = code_maps(node, system.resolve_callable(node)[0])
         reads, writes = list(read_map.values()), list(write_map.values())
-    elif isinstance(node, Box):
+    elif isinstance(node, MASModule):
         return node.types()
     else:
         reads, writes = list(node.reads.values()), [node.answer]
@@ -2066,14 +2067,14 @@ def run_node(mas: MAS, node: str, values: Mapping[str, Any], *, budget: Budget |
     under ``budget``. The trace's ``outputs`` hold the node's writes, typed.
 
     Raises:
-        ValueError: Before any call, for a node inside a box, a human node, a
+        ValueError: Before any call, for a node inside a module, a human action, a
             name that is no node, or values that are not its reads or do not
             fit their types.
     """
     system = node_owner(mas, node)
     target = system.nodes[node]
-    if isinstance(target, Human):
-        raise ValueError(f"node {node!r} is a human node: it asks a person and takes no example")
+    if isinstance(target, HumanAction):
+        raise ValueError(f"node {node!r} is a human action: it asks a person and takes no example")
     reads, writes = node_types(system, target)
     problems = [f"{name!r} is no read of {node!r}, which reads {sorted(reads)}" for name in values if name not in reads]
     problems += [

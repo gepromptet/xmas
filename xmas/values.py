@@ -18,28 +18,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from xmas.media import MEDIA_KINDS, Kind, Ref, Store, fits_kind
+from xmas.media import REF_KINDS, Kind, Ref, Store, fits_kind
 
 __all__ = [
     "FILE",
     "JSON",
     "KINDS",
     "LIST_PREFIX",
-    "MEDIA",
+    "REF_TYPES",
     "TEXT",
     "ValueType",
     "check_value",
-    "coerce_media",
+    "coerce_ref",
     "fits",
-    "media_kind",
     "parse_type",
     "plain",
+    "ref_kind",
     "render_value",
     "type_of_hint",
 ]
 
 
-KINDS = ("text", "json", *MEDIA_KINDS)
+KINDS = ("text", "json", *REF_KINDS)
 """Every value kind of the format; ``list of <kind>`` builds on them."""
 
 LIST = "list"
@@ -78,7 +78,7 @@ JSON = ValueType("json")
 FILE = ValueType("file")
 """Any :class:`~xmas.media.Ref`."""
 
-MEDIA = tuple(ValueType(kind) for kind in MEDIA_KINDS)
+REF_TYPES = tuple(ValueType(kind) for kind in REF_KINDS)
 """The media types: image, audio, document, table and file, each a :class:`~xmas.media.Ref`."""
 
 
@@ -92,11 +92,11 @@ def parse_type(text: str) -> ValueType:
     return ValueType(words)
 
 
-def media_kind(vtype: ValueType) -> str | None:
+def ref_kind(vtype: ValueType) -> str | None:
     """Return the media kind of a media type or of a list's innermost items, else ``None``."""
     while vtype.item is not None:
         vtype = vtype.item
-    return vtype.kind if vtype.kind in MEDIA_KINDS else None
+    return vtype.kind if vtype.kind in REF_KINDS else None
 
 
 def type_of_hint(hint: Any) -> ValueType:
@@ -121,7 +121,7 @@ def type_of_hint(hint: Any) -> ValueType:
         return FILE
     if typing.get_origin(hint) is list and len(args := typing.get_args(hint)) == 1:
         item = type_of_hint(args[0])
-        if media_kind(item) is not None:
+        if ref_kind(item) is not None:
             return ValueType(LIST, item)
     return TEXT if hint is str else JSON
 
@@ -134,7 +134,7 @@ def type_of_schema(schema: dict[str, Any]) -> ValueType:
         if not (isinstance(option, dict) and option.get("type") == "null")
     ]
     if len(options) == 1 and isinstance(option := options[0], dict):
-        media = media_of_schema(option)
+        media = ref_of_schema(option)
         if media is not None:
             return media
     kinds: set[Any] = set()
@@ -144,15 +144,15 @@ def type_of_schema(schema: dict[str, Any]) -> ValueType:
     return TEXT if "string" in kinds and kinds <= {"string", "null"} else JSON
 
 
-def media_of_schema(schema: dict[str, Any]) -> ValueType | None:
+def ref_of_schema(schema: dict[str, Any]) -> ValueType | None:
     """Return the media type a schema marks, a list of one for an array of marked items, else ``None``."""
     kind = schema.get("x-xmas-kind")
-    if kind in MEDIA_KINDS:
+    if kind in REF_KINDS:
         return ValueType(kind)
     items = schema.get("items")
     if schema.get("type") == "array" and isinstance(items, dict):
         item = type_of_schema(items)  # items may be null too, as a gathered list's failed ones are
-        return ValueType(LIST, item) if media_kind(item) is not None else None
+        return ValueType(LIST, item) if ref_kind(item) is not None else None
     return None
 
 
@@ -168,11 +168,11 @@ def render_value(value: Any, vtype: ValueType, *, present: bool = True) -> str:
     the caller says so with ``present=False``, or passes ``None`` for a text or
     media value.
     """
-    if not present or (value is None and (vtype == TEXT or vtype in MEDIA)):
+    if not present or (value is None and (vtype == TEXT or vtype in REF_TYPES)):
         return ""
     if vtype == TEXT:
         return value if isinstance(value, str) else str(value)
-    return json.dumps(plain(value) if media_kind(vtype) is not None else value, ensure_ascii=False)
+    return json.dumps(plain(value) if ref_kind(vtype) is not None else value, ensure_ascii=False)
 
 
 def plain(value: Any) -> Any:
@@ -186,7 +186,7 @@ def plain(value: Any) -> Any:
     return value
 
 
-def coerce_media(value: Any, vtype: ValueType, *, store: Store | None = None) -> Any:
+def coerce_ref(value: Any, vtype: ValueType, *, store: Store | None = None) -> Any:
     """Turn a :class:`~pathlib.Path` given for a media type, or for items of a list of one, into a ref.
 
     Without ``store`` the file is referenced where it is
@@ -195,10 +195,10 @@ def coerce_media(value: Any, vtype: ValueType, *, store: Store | None = None) ->
     leaves the ref intact. Every other value passes unchanged, for
     :func:`check_value` to judge.
     """
-    if media_kind(vtype) is None:
+    if ref_kind(vtype) is None:
         return value
     if vtype.item is not None:
-        return [coerce_media(item, vtype.item, store=store) for item in value] if isinstance(value, list) else value
+        return [coerce_ref(item, vtype.item, store=store) for item in value] if isinstance(value, list) else value
     if not isinstance(value, Path):
         return value
     ref = Ref.from_path(value)
@@ -222,7 +222,7 @@ def fits(value: ValueType, wanted: ValueType) -> bool:
 
     The same type, a list as json, or any media value as a file.
     """
-    return value == wanted or (wanted == JSON and value.item is not None) or (wanted == FILE and value in MEDIA)
+    return value == wanted or (wanted == JSON and value.item is not None) or (wanted == FILE and value in REF_TYPES)
 
 
 def fit_problem(value: Any, vtype: ValueType, path: str) -> str | None:
@@ -238,12 +238,12 @@ def fit_problem(value: Any, vtype: ValueType, path: str) -> str | None:
         return None
     if vtype == TEXT:
         return None if isinstance(value, str) else f"expected text{where}, got {type(value).__name__}"
-    if vtype in MEDIA:
-        return media_problem(value, vtype.kind, where)
+    if vtype in REF_TYPES:
+        return ref_problem(value, vtype.kind, where)
     return json_problem(value, path)
 
 
-def media_problem(value: Any, kind: str, where: str) -> str | None:
+def ref_problem(value: Any, kind: str, where: str) -> str | None:
     """Return why ``value`` is not a ref of ``kind``, or ``None``."""
     if isinstance(value, Ref):
         return None if fits_kind(value, kind) else f"expected {kind}{where}, got a Ref of {value.media_type}"

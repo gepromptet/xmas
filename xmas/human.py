@@ -1,6 +1,6 @@
-"""People in the graph: a :class:`Human` node puts a question to a person and writes the answer.
+"""People in the graph: a :class:`HumanAction` node puts a question to a person and writes the answer.
 
-A human node has one of four forms (:data:`FORMS`), and its answer is one json
+A human action has one of four forms (:data:`FORMS`), and its answer is one json
 value with the fields of its form (:data:`ANSWER_FIELDS`) plus who answered and
 when (:data:`COMMON_FIELDS`):
 
@@ -39,7 +39,7 @@ __all__ = [
     "FORMS",
     "TIE",
     "Asker",
-    "Human",
+    "HumanAction",
     "Pause",
     "Question",
     "ReplayAsker",
@@ -59,11 +59,11 @@ ANSWER_FIELDS: dict[str, tuple[str, ...]] = {
 """The fields an answer of each form holds besides :data:`COMMON_FIELDS`."""
 
 FORMS = tuple(ANSWER_FIELDS)
-"""The forms of a human node."""
+"""The forms of a human action."""
 
 EDITED = "value"
 """The key of an edit's edited value in what a host gives and in :func:`answer_value`'s
-result; :meth:`Human.state_writes` writes it under ``writes["value"]``, not in the answer."""
+result; :meth:`HumanAction.state_writes` writes it under ``writes["value"]``, not in the answer."""
 
 COMMON_FIELDS = ("who", "asked_at", "answered_at", "comment", "timed_out")
 """The fields every answer holds: who answered (``None`` for a default taken on
@@ -152,7 +152,7 @@ def question_id(run_id: str, node: str, visit: int, item: int | None = None, ite
 
 
 @dataclass(frozen=True, init=False)
-class Human:
+class HumanAction:
     """A node that asks a person and writes the answer.
 
     Attributes:
@@ -174,6 +174,7 @@ class Human:
             waits. ``None`` waits until answered.
         default: The answer taken when the deadline passes, as a partial
             answer such as ``{"approved": False}``.
+        detached: Whether the node is detached: no optimizer changes its prompt, model, wiring or edges.
 
     Construction checks the shape of each setting; whether the settings fit the
     form and the reads is :meth:`problems`' question, asked by
@@ -191,6 +192,7 @@ class Human:
     edits: str | None
     timeout_s: float | None
     default: dict[str, Any] | None
+    detached: bool
 
     def __init__(  # noqa: PLR0913  the public signature: one keyword per setting, as a spec writes them
         self,
@@ -206,11 +208,14 @@ class Human:
         edits: str | None = None,
         timeout_s: float | None = None,
         default: Mapping[str, Any] | None = None,
+        detached: bool = False,
     ) -> None:
         """Refuse a setting of the wrong shape and keep plain copies; the fields are described on the class."""
-        where = f"Human {name!r}"
+        where = f"HumanAction {name!r}"
         if not is_text(name) or not is_text(form) or not isinstance(question, str):
-            raise ValueError(f"{where}: a human node needs a name, a form and a text question.")
+            raise ValueError(f"{where}: a human action needs a name, a form and a text question.")
+        if not isinstance(detached, bool):
+            raise ValueError(f"{where}: detached must be true or false, got {detached!r}.")
         given: dict[str, Any] = {
             "name": name,
             "form": form,
@@ -223,6 +228,7 @@ class Human:
             "default": plain_mapping(where, "default", default),
             "edits": checked_edits(where, edits),
             "timeout_s": checked_timeout(where, timeout_s),
+            "detached": detached,
         }
         for key, value in given.items():
             object.__setattr__(self, key, value)
@@ -249,7 +255,7 @@ class Human:
 
     def problems(self) -> Iterator[str]:
         """Say what is wrong with the node on its own: its form, its settings, its templates and its default."""
-        where = f"human {self.name!r}"
+        where = f"human action {self.name!r}"
         if self.form not in FORMS:
             yield f"{where}: form {self.form!r} is not one of {list(FORMS)}"
             return
@@ -369,7 +375,7 @@ class Human:
             shown = [item.get("label") if isinstance(item, Mapping) else item for item in found or [None]]
             if not isinstance(found, list) or not all(isinstance(label, str) for label in shown):
                 raise ValueError(
-                    f"human {self.name!r}: options {self.options!r} must be a list of text or of {{label: ...}} "
+                    f"human action {self.name!r}: options {self.options!r} must be a list of text or of {{label: ...}} "
                     f"maps, got {found!r}"
                 )
             return tuple(str(label) for label in shown)
@@ -398,17 +404,19 @@ class Human:
             "default": None if self.default is None else dict(self.default),
         }
         data.update((key, value) for key, value in given.items() if value is not None)
+        if self.detached:
+            data["detached"] = True
         return data
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> Human:
+    def from_dict(cls, data: Mapping[str, Any]) -> HumanAction:
         """Read a spec entry; ``for each`` is the MAS's, so it is skipped here."""
         settings = {key: value for key, value in data.items() if key not in ("name", "form", "reads", "for each")}
         return cls(data["name"], data["form"], data.get("reads", ()), **settings)
 
 
 def plain_reads(where: str, reads: Any) -> dict[str, str]:
-    """Return a human node's reads as ``{placeholder: value}``; a list reads each value under its own name."""
+    """Return a human action's reads as ``{placeholder: value}``; a list reads each value under its own name."""
     if isinstance(reads, Mapping):
         pairs = list(reads.items())
     else:
@@ -419,7 +427,7 @@ def plain_reads(where: str, reads: Any) -> dict[str, str]:
 
 
 def plain_writes(where: str, writes: Any) -> dict[str, str]:
-    """Return a human node's writes as ``{role: value}``; a bare name or ``{name: json}`` is the answer."""
+    """Return a human action's writes as ``{role: value}``; a bare name or ``{name: json}`` is the answer."""
     named = {"answer": writes} if isinstance(writes, str) else writes
     if isinstance(named, Mapping) and len(named) == 1 and not set(named) <= set(ROLES):
         ((value, word),) = named.items()  # {name: type}, as an agent writes
@@ -466,12 +474,12 @@ def checked_timeout(where: str, timeout: Any) -> float | None:
 
 @dataclass(frozen=True)
 class Question:
-    """One question a visit of a human node puts to a person.
+    """One question a visit of a human action puts to a person.
 
     Attributes:
         id: ``<run_id>/<node>[/<item key or index>]/<visit>``.
         run_id: The run that asks.
-        node: The human node.
+        node: The human action.
         form: The node's form.
         text: The question, filled from the reads.
         shown: Each read, by placeholder, rendered as an agent's input renders.
@@ -559,11 +567,11 @@ class ReplayAsker:
     """
 
     def __init__(self, traces: Trace | Iterable[Trace]) -> None:
-        """Index the human records of ``traces``, boxes' inner records included."""
+        """Index the human records of ``traces``, modules' inner records included."""
         self.answers: dict[tuple[str, str | int | None, int | None], dict[str, Any]] = {}
         for trace in [traces] if isinstance(traces, Trace) else traces:
             for _, record in trace.walk():
-                if record.kind != "human" or record.error is not None:
+                if record.kind != "human_action" or record.error is not None:
                     continue
                 where = record.item_key if record.item_key is not None else record.item
                 self.answers.setdefault((record.agent, where, record.visit), json.loads(record.raw_response))

@@ -172,7 +172,7 @@ class RouteGraph:
             if any(self.choices.get(point) is None for point in points):
                 refusals[name] = (
                     f"node {name!r}: more than {ROUTE_CAP} route combinations reach it, so whether it merges "
-                    "or joins cannot be proved; put part of the system in a box"
+                    "or joins cannot be proved; put part of the system in a module"
                 )
                 continue
             groups: list[list[Point]] = []

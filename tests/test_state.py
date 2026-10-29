@@ -15,10 +15,10 @@ from typing import Any, cast
 
 import pytest
 
-from xmas import MAS, Agent, Box, Budget, ErrorKind, TokenUsage
+from xmas import MAS, Agent, Budget, ErrorKind, MASModule, TokenUsage
 from xmas.edges import Edge, EdgeKind
 from xmas.media import Image, Ref
-from xmas.nodes import Step
+from xmas.nodes import Code
 from xmas.tools import tool
 from xmas.trace import Trace
 
@@ -85,13 +85,13 @@ def test_run_state_checks_inputs_and_returns_outputs() -> None:
     with pytest.raises(ValueError, match="'query' is not text"):
         v1.run_state({"query": 3})
 
-    # a box's inner trace is no run of its own
+    # a module's inner trace is no run of its own
     inner = MAS([Agent("cut", "Cut {page}", "short", ["page"])], inputs={"page": "text"}, llm=MockLLM())
     boxed = MAS(
         [],
         [("summarize", "fin")],
-        boxes=[Box("summarize", inner, reads={"page": "query"}, writes={"short": "short"})],
-        steps=[Step("fin", "shout")],
+        modules=[MASModule("summarize", inner, reads={"page": "query"}, writes={"short": "short"})],
+        code_nodes=[Code("fin", "shout")],
         tools=[shout],
         llm=inner.llm,
     )
@@ -107,7 +107,7 @@ def shout(short: str) -> str:
 
 
 def down_at_first(fails: int) -> tuple[Any, list[str]]:
-    """A fetch step's callable that meets an outage on its first ``fails`` calls, and the queries it was called on."""
+    """A fetch code node's callable that meets an outage on its first ``fails`` calls, and the queries it got."""
     calls: list[str] = []
 
     @tool(writes={"page": "text"})
@@ -122,10 +122,10 @@ def down_at_first(fails: int) -> tuple[Any, list[str]]:
 
 
 def test_retry_and_reserved_reads() -> None:
-    # a step whose callable fails once with an outage is run again: one record, one retry
+    # a code node whose callable fails once with an outage is run again: one record, one retry
     for fails, ok in ((1, True), (2, False)):
         fetch, calls = down_at_first(fails)
-        mas = MAS([], steps=[Step("fetch", "fetch")], retry={"fetch": {"outage": 1}}, tools=[fetch])
+        mas = MAS([], code_nodes=[Code("fetch", "fetch")], retry={"fetch": {"outage": 1}}, tools=[fetch])
         trace: Any = mas.run("cats")
         (record,) = trace["fetch"]
         assert (trace.error is None, record.retries, len(calls)) == (ok, 1, 2)
@@ -151,14 +151,14 @@ def test_retry_and_reserved_reads() -> None:
     routed = MAS(
         [sorry],
         [Edge("fetch", "sorry", EdgeKind.ERROR, errors=("timeout",))],
-        steps=[Step("fetch", "slow")],
+        code_nodes=[Code("fetch", "slow")],
         tools=[slow],
         llm=MockLLM(),
     ).run("cats")
     error = {"kind": "timeout", "message": "TimeoutError: the server took too long", "node": "fetch"}
     assert routed["sorry"][0].rendered_prompt == f"Sorry: {json.dumps(error)}"
 
-    # run: the spend so far, read by an agent, a step and a predicate
+    # run: the spend so far, read by an agent, a code node and a predicate
     @tool(writes={"spent": "json"})
     def spend(run: dict[str, Any]) -> dict[str, Any]:
         """Keep what the run has spent."""
@@ -176,7 +176,7 @@ def test_retry_and_reserved_reads() -> None:
             Edge("spend", "more", EdgeKind.WHEN, when="run.records >= 3 and run.calls == 2"),
             Edge("spend", "fin", EdgeKind.ELSE),
         ],
-        steps=[Step("spend", "spend"), Step("fin", "spend", writes={"spent": "final"})],
+        code_nodes=[Code("spend", "spend"), Code("fin", "spend", writes={"spent": "final"})],
         tools=[spend],
         llm=MockLLM(meta=True),
     ).run("cats")
@@ -347,7 +347,7 @@ def test_a_step_returning_a_path_writes_a_stored_ref(png: Path) -> None:
     mas = MAS(
         [Agent("judge", "Look: {png}", "verdict", ["png"])],
         [("draw", "judge")],
-        steps=[Step("draw", "draw")],
+        code_nodes=[Code("draw", "draw")],
         tools=[draw],
         llm=SeeingLLM(),
         outputs={"png": "image", "verdict": "text"},
@@ -366,7 +366,7 @@ def test_the_run_log_keeps_a_run_that_dies_midway() -> None:
     mas = MAS(
         [Agent("writer", "Write {query}", "draft")],
         [("writer", "publish")],
-        steps=[Step("publish", "publish")],
+        code_nodes=[Code("publish", "publish")],
         tools=[publish],
         llm=MockLLM(meta=True),
     )

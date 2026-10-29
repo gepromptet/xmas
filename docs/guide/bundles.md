@@ -22,7 +22,7 @@ team.mas/
   xmas.yaml        # the wiring: inputs, outputs, nodes, edges, models by name
   callables.yaml   # where each function and tool lives, with typed reads and writes
   prompts/         # one plain-text file per prompt: writer.md, judge.md
-  boxes/           # each box's system, as a bundle of its own
+  modules/           # each module's system, as a bundle of its own
   examples/        # warm-up cases for verify(), optional
   optimize.yaml    # what an optimizer may tune, optional
   xmas.lock        # checksums of every file and of each function's source
@@ -35,7 +35,7 @@ version: 2
 agents:
   - {name: writer, reads: [query, verdict], writes: {draft: text}}
   - {name: judge, reads: [query, draft, count_words], writes: {verdict: json}}
-steps:
+code_nodes:
   - {name: count, uses: count_words}
   - {name: publish, uses: publish}
   - {name: sorry, uses: apologize}
@@ -111,7 +111,7 @@ Any system's spec is plain data. `to_dict()` gives it, and `MAS.from_dict` rebui
 system with the same models and functions:
 
 ```python
-spec = mas.to_dict()  # version, agents, steps, edges, callables, prompts
+spec = mas.to_dict()  # version, agents, code nodes, edges, callables, prompts
 rebuilt = MAS.from_dict(spec, llm=llm, tools=[count_words, publish, apologize])
 print(rebuilt.describe()["id"] == mas.describe()["id"])  # True
 ```
@@ -139,7 +139,7 @@ runs and saves as before.
 - **1, dry:** the wiring check, every prompt rendered, every answer form compiled, every
   examples file read, and every model name looked up in the endpoint's catalogue. No
   model is called. This is the default level.
-- **2, warm-up:** the examples run under a small budget. A step must write exactly what
+- **2, warm-up:** the examples run under a small budget. A code node must write exactly what
   was recorded, and an agent's answer must pass its checks.
 
 `save_examples` records one case per node from a run. Here the loaded team runs once and

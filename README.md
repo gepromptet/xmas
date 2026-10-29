@@ -6,7 +6,7 @@
 ![Python Versions](https://img.shields.io/badge/Python%20Versions-3.12-blue)
 
 🎁 **xmas builds, runs and optimizes multi-agent systems.** A system is a set of agents,
-the plain code steps between them, the edges that wire them together and the model behind
+the code nodes between them, the edges that wire them together and the model behind
 each agent. xmas treats all of it as one object whose parts are ordinary parameters, so an
 optimizer can improve every agent's prompt, the wiring and the choice of model against a
 task you care about. Every run leaves a full per-agent trace with cost, time and errors,
@@ -15,8 +15,8 @@ system, not a special case.
 
 ## 🚀 What is xmas?
 
-In version 2, a system is a typed graph. Its nodes are agents, plain Python steps, people
-who approve or edit, and boxes that hold a whole system. Its edges carry conditions, loops
+In version 2, a system is a typed graph. Its nodes are agents, plain Python code nodes, people
+who approve or edit, and modules that hold a whole system. Its edges carry conditions, loops
 and races, and a chain runs part of the graph once per item of a list. Every value has a
 type: text, JSON, a picture or a file. xmas checks the wiring before the first model call
 and draws the picture from the graph that runs. A system saves as a `.mas` bundle, a
@@ -32,7 +32,7 @@ the principles behind the design.
 ### Key Features
 
 - **Your first system in minutes:** a few `Agent` objects and their edges, and it runs.
-- **One typed graph:** agents, code steps, people and boxes, with every value typed and the wiring checked before any call.
+- **One typed graph:** agents, code nodes, human actions and modules, with every value typed and the wiring checked before any call.
 - **Conditions and loops:** `when`, `else`, `while`, `switch`, `on error` and `first of` edges, and `for each` chains.
 - **Answers with a shape:** JSON answers with fixed fields, and one retry when an answer does not fit.
 - **Pictures and files as values:** a model that can see gets the pictures, and the check refuses one that cannot.
@@ -106,13 +106,13 @@ print(mas.last_trace["intern"][0].outputs)  # {'draft': ...}: who really did the
 The model name must be one your endpoint serves. Each agent can run on its own model:
 give it `model="..."` and pass the models by name through `MAS(..., llms={...})`.
 
-### Version 2: a step and a JSON judge
+### Version 2: a code node and a JSON judge
 
-A writer drafts, a plain Python step counts the words, and a judge answers in JSON with a
-fixed field. The step makes no model call. `llm` is the quickstart's model.
+A writer drafts, a plain Python code node counts the words, and a judge answers in JSON with a
+fixed field. The code node makes no model call. `llm` is the quickstart's model.
 
 ```python
-from xmas import MAS, Agent, Step
+from xmas import MAS, Agent, Code
 from xmas.tools import tool
 
 
@@ -133,7 +133,7 @@ judge = Agent(
 )
 mas = MAS(
     [writer, judge],
-    steps=[Step("count", uses="count_words")],
+    code_nodes=[Code("count", uses="count_words")],
     edges=[("writer", "count"), ("count", "judge")],
     tools=[count_words],
     llm=llm,
@@ -142,7 +142,7 @@ mas = MAS(
 trace = mas.run("Why is the sky blue?")
 print(trace.output)  # {"fits": true}
 print([(record.agent, record.kind) for record in trace.records])
-# [('writer', 'agent'), ('count', 'step'), ('judge', 'agent')]
+# [('writer', 'agent'), ('count', 'code'), ('judge', 'agent')]
 ```
 
 The judge's model sees the schema as a few format lines after the prompt. An answer that
@@ -181,23 +181,23 @@ Each part has a page in the guide, with code that runs as written:
 - [Conditions and loops](docs/guide/conditions-and-loops.md): `when`, `else`, `while`, `switch` and `on error` edges, joins and merges.
 - [Reading a run](docs/guide/reading-a-run.md): records, health signals, budgets, and the run log.
 - [Drawing a system](docs/guide/drawing-a-system.md): `describe()`, the graph that runs as plain data.
-- [A system inside a system](docs/guide/boxes.md): a box runs a whole system as one node.
+- [A system inside a system](docs/guide/boxes.md): a module runs a whole system as one node.
 - [Once per item](docs/guide/chains.md): a `for each` chain runs some nodes once per item of a list.
 - [Several values in, several out](docs/guide/run-state.md): `run_state`, events as the run goes, and retries.
 - [Pictures, documents and other files](docs/guide/media.md): media values by reference, checked against what each model accepts.
 - [People, Stop and races](docs/guide/people.md): a person in the graph, a Stop that stops, and `first of` races.
 - [Bundles](docs/guide/bundles.md): save, load, the lock, `verify()`, warm-up examples, the `xmas` command and configuration in full.
-- [Optimization](docs/guide/optimization.md): CANTANTE, frozen nodes, topology search, and xmas with promptolution.
+- [Optimization](docs/guide/optimization.md): CANTANTE, detached nodes, topology search, and xmas with promptolution.
 - Planned: [learning from human picks](docs/guide/roadmap.md).
 
 ## 🏗 Components
 
 - **`Agent`** – One node: a prompt template, the values it reads and the value it writes.
-- **`Step`** – A node that runs a function or an MCP tool from the system's `tools=`, with no model call.
+- **`Code`** – A node that runs a function or an MCP tool from the system's `tools=`, with no model call.
 - **`Edge`** – One edge with its operator, an `EdgeKind`: plain, `when`, `else`, `while`, `switch`, `on error` or `first of`.
-- **`Box`** – A whole system used as one node of another.
-- **`Human`** – A node that asks a person, in one of four forms: `ask`, `judge`, `approve` or `edit`.
-- **`MAS`** – The system and the predictor: agents, steps, edges, models and tools; runs a query and keeps its trace.
+- **`MASModule`** – A whole system used as one node of another.
+- **`HumanAction`** – A node that asks a person, in one of four forms: `ask`, `judge`, `approve` or `edit`.
+- **`MAS`** – The system and the predictor: agents, code nodes, edges, models and tools; runs a query and keeps its trace.
 - **`Trace`** – The per-agent record of one run: rendered prompts, outputs, tokens, cost, time, tool calls, status.
 - **`ForEach`** – The `for each` form of a chain: the item, the list it comes from, and options such as `at_once` and `key`.
 - **`Ref`** – A picture, a sound, a document, a table or a file as a value: where it is, its type, size and checksum.

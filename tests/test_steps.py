@@ -1,4 +1,4 @@
-"""Version 2 in the engine: typed values, steps, one callable registry, answer forms with one retry.
+"""Version 2 in the engine: typed values, code nodes, one callable registry, answer forms with one retry.
 
 No network: the models are scripted doubles.
 """
@@ -14,7 +14,7 @@ import pytest
 from xmas import MAS, Agent, Budget, ErrorKind, TokenUsage, ToolCall
 from xmas.edges import Edge, EdgeKind
 from xmas.errors import EmptyResponse, XmasError
-from xmas.nodes import Step
+from xmas.nodes import Code
 from xmas.schemas import RETRY_NOTE
 from xmas.tools import Tool, ToolSource, index_tools, tool
 from xmas.trace import Rejected
@@ -43,7 +43,7 @@ COUNTS_TEXT = '{"points": 2, "words": 4}'
 
 
 def planned_note(**kwargs: Any) -> tuple[MAS, MockLLM]:
-    """A planner answering a json plan, the step ``count`` counting its points, and a writer reading both."""
+    """A planner answering a json plan, the code node ``count`` counting its points, and a writer reading both."""
 
     def answer(prompt: str) -> str:
         return "```json\n" + json.dumps(PLAN) + "\n```" if prompt.startswith("Plan") else "A note."
@@ -55,7 +55,7 @@ def planned_note(**kwargs: Any) -> tuple[MAS, MockLLM]:
         [planner, writer],
         # writer is fed by planner and by count, at unequal depth: a barrier, so it runs once
         [("planner", "count"), ("count", "writer"), ("planner", "writer")],
-        steps=[Step("count", "count_points")],
+        code_nodes=[Code("count", "count_points")],
         llm=llm,
         tools=[count_points],
         **kwargs,
@@ -70,7 +70,7 @@ def test_a_step_runs_between_agents_with_typed_values() -> None:
     trace = mas.run("cats")
 
     assert trace.error is None
-    assert [(r.agent, r.kind) for r in trace.records] == [("planner", "agent"), ("count", "step"), ("writer", "agent")]
+    assert [(r.agent, r.kind) for r in trace.records] == [("planner", "agent"), ("count", "code"), ("writer", "agent")]
     assert llm.calls == [f"Plan a note on cats.\n\n{FORMAT}", f"Write about {PLAN_TEXT} using {COUNTS_TEXT}."]
     planner, step, writer = trace.records
     assert planner.outputs == {"plan": PLAN_TEXT}
@@ -84,11 +84,11 @@ def test_a_step_runs_between_agents_with_typed_values() -> None:
     assert step.latency_s is not None
     assert writer.inputs == {"plan": PLAN_TEXT, "counts": COUNTS_TEXT}
     assert trace.output == "A note."
-    assert trace.to_dict()["records"][1]["kind"] == "step"
+    assert trace.to_dict()["records"][1]["kind"] == "code"
 
 
 def test_a_step_spends_no_model_call() -> None:
-    """With one call allowed, the step still runs, and the writer is refused."""
+    """With one call allowed, the code node still runs, and the writer is refused."""
     limited, _ = planned_note(budget=Budget(max_calls=1))
     failed = limited.run("cats")
     assert failed.error_kind == ErrorKind.BUDGET
@@ -97,15 +97,15 @@ def test_a_step_spends_no_model_call() -> None:
 
 def test_a_system_whose_inputs_are_not_a_query_does_not_run_on_one() -> None:
     boxed, _ = planned_note(inputs={"query": TEXT, "style": TEXT})
-    with pytest.raises(ValueError, match=r"only runs on one text query; use it as a box\."):
+    with pytest.raises(ValueError, match=r"only runs on one text query; use it as a module\."):
         boxed.run("cats")
 
 
 def test_one_callable_is_a_tool_and_a_step() -> None:
     llm = MockLLM(turns=[("", [req("shout", '{"text": "hi"}')]), ("said hi", [])])
     writer = Agent("writer", "Greet {query}.", output="draft", tools=["shout"])
-    loud = Step("loud", "shout", reads={"text": "draft"}, writes={"shout": "loud"})
-    mas = MAS([writer], [("writer", "loud")], steps=[loud], llm=llm, tools=[shout])
+    loud = Code("loud", "shout", reads={"text": "draft"}, writes={"shout": "loud"})
+    mas = MAS([writer], [("writer", "loud")], code_nodes=[loud], llm=llm, tools=[shout])
     assert list(index_tools(mas.tools)) == ["shout"]
     assert shout.reads == {"text": TEXT}
     assert shout.writes == {"shout": TEXT}
@@ -114,7 +114,7 @@ def test_one_callable_is_a_tool_and_a_step() -> None:
     assert trace.error is None
     called, stepped = trace.records
     assert called.tool_calls == (ToolCall("shout", {"text": "hi"}, "HI!"),)
-    assert (stepped.kind, stepped.inputs, stepped.outputs) == ("step", {"draft": "said hi"}, {"loud": "SAID HI!"})
+    assert (stepped.kind, stepped.inputs, stepped.outputs) == ("code", {"draft": "said hi"}, {"loud": "SAID HI!"})
     assert trace.output == "SAID HI!"
 
 
@@ -215,7 +215,7 @@ def test_a_step_costs_nothing() -> None:
     mas = MAS(
         [loud],
         [("writer", "shout")],
-        steps=[Step("shout", "shout", {"text": "draft"})],
+        code_nodes=[Code("shout", "shout", {"text": "draft"})],
         tools=[shout],
         llm=MockLLM(answers=["a draft"], meta=True),
     )
@@ -294,8 +294,10 @@ def test_an_optional_text_parameter_reads_text() -> None:
 
     assert tidy.reads == {"draft": TEXT}  # so a text value may feed it
     writer = Agent("writer", "Write {query}", output="draft")
-    steps = [Step("tidy", "tidy")]
-    mas = MAS([writer], [("writer", "tidy")], steps=steps, tools=[tidy], llm=MockLLM(answers=[" cats "], meta=True))
+    code_nodes = [Code("tidy", "tidy")]
+    mas = MAS(
+        [writer], [("writer", "tidy")], code_nodes=code_nodes, tools=[tidy], llm=MockLLM(answers=[" cats "], meta=True)
+    )
     assert mas.run("q").output == "CATS"
 
 

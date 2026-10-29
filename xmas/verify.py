@@ -11,7 +11,7 @@ Three levels, each including the ones below it:
   endpoint's catalogue. No model call.
 - **2, warm-up:** the examples run, a node case through
   :func:`~xmas.runtime.run_node` and a run case through ``run_state``, under a
-  small budget. A step must write what was recorded; an agent's answer must
+  small budget. A code node must write what was recorded; an agent's answer must
   pass its case's checks.
 
 A report that is not ok issues one :class:`VerifyWarning`, or raises
@@ -32,12 +32,12 @@ from xmas.bundle import LOCK, LockDiff, check_lock, code_hashes, files_of, owned
 from xmas.check import check_system
 from xmas.config import Catalogue, Config, read_catalogue, resolve_names
 from xmas.examples import FOLDER, UNSET, Check, Example, ExampleFile, parse_examples, run_checks, written
-from xmas.human import Human
+from xmas.human import HumanAction
 from xmas.media import Ref
 from xmas.runtime import node_owner, node_types, render_prompt, run_node
 from xmas.schemas import compile_form
 from xmas.spec import VERSION_2
-from xmas.values import JSON, TEXT, ValueType, check_value, media_kind, parse_type
+from xmas.values import JSON, TEXT, ValueType, check_value, parse_type, ref_kind
 
 if TYPE_CHECKING:  # pragma: no cover
     from xmas.mas import MAS
@@ -405,8 +405,8 @@ def case_problems(mas: MAS, example: Example) -> list[str]:
     except ValueError as error:
         return [str(error)]
     node = system.nodes[example.node]
-    if isinstance(node, Human):
-        return [f"node {example.node!r} is a human node: it asks a person and takes no example"]
+    if isinstance(node, HumanAction):
+        return [f"node {example.node!r} is a human action: it asks a person and takes no example"]
     reads, writes = node_types(system, node)
     lines = fit(example.inputs, reads, "read")
     if example.recorded is not UNSET:
@@ -463,7 +463,7 @@ def render_problems(mas: MAS, cases: Iterable[Example]) -> list[str]:
 
 def empty(vtype: ValueType) -> Any:
     """Return a placeholder value of a type: ``""`` for text, ``{}`` for json, a ref to nothing for media."""
-    kind = media_kind(vtype)
+    kind = ref_kind(vtype)
     if kind is not None:
         ref = Ref(f"example.{kind}", PLACEHOLDER_TYPES.get(kind, "application/octet-stream"))
         return [ref] if vtype.item is not None else ref
@@ -550,7 +550,7 @@ def example_failures(mas: MAS, example: Example, trace: Trace) -> list[str]:
         visits = trace[example.node]
         record = visits[-1] if visits else None
         checks = example.must
-        if not checks and example.recorded is not UNSET and record is not None and record.kind == "step":
+        if not checks and example.recorded is not UNSET and record is not None and record.kind == "code":
             checks = (Check("equals", value=example.recorded),)
         return run_checks(checks, trace.outputs, record)
     lines = []

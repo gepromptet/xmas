@@ -1,4 +1,4 @@
-"""Version 2 boxes in the engine: a whole inner system runs as one node, on the outer run's meter.
+"""Version 2 modules in the engine: a whole inner system runs as one node, on the outer run's meter.
 
 The models are scripted doubles.
 """
@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from xmas import MAS, Agent, Box, Budget, ErrorKind, TokenUsage
+from xmas import MAS, Agent, Budget, ErrorKind, MASModule, TokenUsage
 from xmas.edges import Edge, EdgeKind
 
 from .conftest import MockLLM
@@ -18,7 +18,7 @@ TIMEOUT = TimeoutError("the model took too long")
 
 
 def shorten_and_post(answers: list[str | Exception], **kwargs: Any) -> MAS:
-    """Writer, then the box ``shorten`` (a one-agent inner system), then poster; a timeout routes to apology."""
+    """Writer, then the module ``shorten`` (a one-agent inner system), then poster; a timeout routes to apology."""
     llm = MockLLM(answers=answers, meta=True)
     cutter = Agent("cutter", "Cut this to half its length: {page}", output="short", inputs=["page"])
     inner = MAS([cutter], inputs={"page": "text"}, llm=llm)
@@ -33,7 +33,7 @@ def shorten_and_post(answers: list[str | Exception], **kwargs: Any) -> MAS:
             ("shorten", "poster"),
             Edge("shorten", "apology", EdgeKind.ERROR, errors=("timeout",)),
         ],
-        boxes=[Box("shorten", inner, reads={"page": "draft"}, writes={"short": "draft"})],
+        modules=[MASModule("shorten", inner, reads={"page": "draft"}, writes={"short": "draft"})],
         state={"draft": {"merge": "last"}, "post": {"merge": "last"}},
         llm=llm,
         **kwargs,
@@ -48,7 +48,7 @@ def test_a_box_maps_its_values_in_and_out_and_nests_its_records() -> None:
 
     # the outer draft goes in as the inner page; the inner short comes back as the draft
     (box,) = trace["shorten"]
-    assert box.kind == "box"
+    assert box.kind == "module"
     assert box.route == ("poster",)
     assert box.inputs == {"draft": "A long draft about cats."}
     assert box.outputs == {"draft": "Cats."}
@@ -61,7 +61,7 @@ def test_a_box_maps_its_values_in_and_out_and_nests_its_records() -> None:
     assert box.tokens == TokenUsage(10, 2)
     assert box.usage == box.inner.records[0].usage
 
-    # the trace keeps the inner records inside the box, and walk() names the path
+    # the trace keeps the inner records inside the module, and walk() names the path
     assert [r.agent for r in trace.records] == ["writer", "shorten", "poster"]
     assert [(path, r.agent) for path, r in trace.walk()] == [
         ((), "writer"),
@@ -70,7 +70,7 @@ def test_a_box_maps_its_values_in_and_out_and_nests_its_records() -> None:
         ((), "poster"),
     ]
     data = trace.to_dict()["records"][1]
-    assert data["kind"] == "box"
+    assert data["kind"] == "module"
     assert [r["agent"] for r in data["inner"]["records"]] == ["cutter"]
     assert "inner" not in trace.to_dict()["records"][0]
 
@@ -80,7 +80,7 @@ def test_a_box_inside_a_box_names_both_in_the_path() -> None:
     wrapper = MAS(
         [Agent("echo", "Echo {post}", output="echoed", inputs=["post"])],
         [("all", "echo")],
-        boxes=[Box("all", again, reads={"query": "query"}, writes={"post": "post"})],
+        modules=[MASModule("all", again, reads={"query": "query"}, writes={"post": "post"})],
         llm=again.llm,
     )
     nested = wrapper.run("cats")
@@ -111,7 +111,7 @@ def test_an_inner_failure_fails_the_box_with_its_kind_and_the_outer_error_edge_r
     assert routed.error is None
     assert routed.output == "Sorry."
     (failed_box,) = routed["shorten"]
-    assert failed_box.kind == "box"
+    assert failed_box.kind == "module"
     assert failed_box.error_kind == ErrorKind.TIMEOUT
     assert failed_box.error == "TimeoutError: the model took too long"
     assert failed_box.route == ("apology",)
@@ -122,7 +122,10 @@ def test_an_inner_failure_fails_the_box_with_its_kind_and_the_outer_error_edge_r
 
 
 def test_a_failed_box_keeps_its_inner_trace_and_cost() -> None:
-    """The inner records before the failure stay in the failed box's record; one unknown cost makes its sum unknown."""
+    """The inner records before the failure stay in the failed module's record.
+
+    One unknown cost makes its sum unknown.
+    """
     llm = MockLLM(answers=[], meta=True)
     inner = MAS(
         [
@@ -136,7 +139,7 @@ def test_a_failed_box_keeps_its_inner_trace_and_cost() -> None:
     outer = MAS(
         [Agent("writer", "Write {query}", output="draft"), Agent("apology", "Sorry {query}", output="post")],
         [("writer", "shorten"), Edge("shorten", "apology", EdgeKind.ERROR, errors=("timeout",))],
-        boxes=[Box("shorten", inner, reads={"page": "draft"}, writes={"final": "post"})],
+        modules=[MASModule("shorten", inner, reads={"page": "draft"}, writes={"final": "post"})],
         state={"post": {"merge": "last"}},
         llm=llm,
     )
@@ -152,7 +155,7 @@ def test_a_failed_box_keeps_its_inner_trace_and_cost() -> None:
         assert box.inner.error_kind == ErrorKind.TIMEOUT
         assert box.inner.records[0].cost_usd == pytest.approx(0.01)  # the cutter's paid call stays in the record
         assert box.cost_usd is None
-        assert box.tokens is None  # polish's cost is unknown, so the box's is too
+        assert box.tokens is None  # polish's cost is unknown, so the module's is too
         assert trace.cost_usd is None
         assert [(path, r.agent) for path, r in trace.walk()][1:4] == [
             ((), "shorten"),

@@ -13,7 +13,7 @@ import pytest
 from xmas import END, MAS, Agent, Budget, ErrorKind
 from xmas.edges import Edge, EdgeKind
 from xmas.errors import BudgetExceeded
-from xmas.nodes import Step
+from xmas.nodes import Code
 from xmas.routes import RouteGraph
 from xmas.tools import tool
 
@@ -114,7 +114,7 @@ def test_a_merge_inside_a_loop_joins_a_parallel_chain_that_runs_once() -> None:
             Edge("m", "w", EdgeKind.WHILE, when="true", max_visits=3),
             Edge("m", "fin", EdgeKind.ELSE),
         ],
-        steps=[Step("c", "check")],
+        code_nodes=[Code("c", "check")],
         llm=MockLLM(answer),
         tools=[check],
     )
@@ -165,7 +165,7 @@ def fetch_and_join() -> MAS:
             ("fb", "j"),
             ("side", "j"),
         ],
-        steps=[Step("fetch", "fetch"), Step("fb", "fallback"), Step("side", "side")],
+        code_nodes=[Code("fetch", "fetch"), Code("fb", "fallback"), Code("side", "side")],
         state={"page": {"merge": "last"}},
         llm=MockLLM(lambda p: p.upper()),
         tools=[fetch, fallback, side],
@@ -192,7 +192,7 @@ def test_a_failure_of_a_routed_kind_takes_its_error_route() -> None:
     assert failed.error_kind == ErrorKind.TIMEOUT
     assert failed.outputs == {}
     assert failed.route == ("fb",)
-    assert failed.kind == "step"
+    assert failed.kind == "code"
     assert failed.latency_s is not None
     assert failed.to_dict()["error"] == "TimeoutError: the server took too long"
     assert routed.health is not None
@@ -347,7 +347,7 @@ def test_a_falsy_switch_case_is_a_case() -> None:
             Edge("score", "no", EdgeKind.SWITCH, switch="score.n", case=False),
             Edge("score", "other", EdgeKind.ELSE),
         ],
-        steps=[Step("score", "score_of")],
+        code_nodes=[Code("score", "score_of")],
         state={"label": {"merge": "last"}},
         tools=[score_of],
         llm=MockLLM(lambda p: p.split(":")[0]),

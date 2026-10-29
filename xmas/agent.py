@@ -40,6 +40,8 @@ class Agent:
             ``"json"``.
         schema: The answer form a json answer must match, in the dialect of
             :mod:`xmas.schemas`, or ``None`` for any JSON.
+        detached: Whether the node is detached: no optimizer changes its prompt, model, wiring or edges.
+            A detached agent makes the system version 2.
     """
 
     name: str
@@ -50,6 +52,7 @@ class Agent:
     model: str | None
     output_type: str
     schema: dict[str, Any] | None
+    detached: bool
 
     def __init__(  # noqa: PLR0913, PLR0917  the public constructor, kept for version 1 callers
         self,
@@ -61,6 +64,8 @@ class Agent:
         model: str | None = None,
         output_type: str = "text",
         schema: dict[str, Any] | None = None,
+        *,
+        detached: bool = False,
     ) -> None:
         """Initialize an agent; the fields are described on the class."""
         if not name:
@@ -85,6 +90,7 @@ class Agent:
         self.model = model
         self.output_type = output_type
         self.schema = schema
+        self.detached = detached
 
     @property
     def inputs(self) -> list[str]:
@@ -105,8 +111,8 @@ class Agent:
 
         ``inputs`` is a list of value names, or the ``{placeholder: value}``
         map when a placeholder reads a value of another name. ``output_type``
-        and ``schema`` appear only when set, so a version 1 agent's dict keeps
-        its six keys.
+        ``schema`` and ``detached`` appear only when set, so a version 1 agent's
+        dict keeps its six keys.
         """
         data: dict[str, Any] = {
             "name": self.name,
@@ -120,12 +126,24 @@ class Agent:
             data["output_type"] = self.output_type
         if self.schema is not None:
             data["schema"] = copy.deepcopy(self.schema)
+        if self.detached:
+            data["detached"] = True
         return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Agent:
         """Rebuild an agent from :meth:`to_dict` output, refusing unknown or missing keys and wrong types."""
-        unknown = set(data) - {"name", "prompt", "inputs", "output", "tools", "model", "output_type", "schema"}
+        unknown = set(data) - {
+            "name",
+            "prompt",
+            "inputs",
+            "output",
+            "tools",
+            "model",
+            "output_type",
+            "schema",
+            "detached",
+        }
         if unknown:
             raise ValueError(f"Unknown agent keys: {sorted(unknown)}.")
         missing = {"name", "prompt", "output"} - set(data)
@@ -145,6 +163,8 @@ class Agent:
         schema = data.get("schema")
         if schema is not None and not isinstance(schema, dict):
             raise ValueError(f"Agent {data['name']!r} needs 'schema' to be a mapping or null.")
+        if not isinstance(data.get("detached", False), bool):
+            raise ValueError(f"Agent {data['name']!r} needs 'detached' to be true or false.")
         return cls(
             name=data["name"],
             prompt=data["prompt"],
@@ -154,6 +174,7 @@ class Agent:
             model=data.get("model"),
             output_type=data.get("output_type", "text"),
             schema=data.get("schema"),
+            detached=data.get("detached", False),
         )
 
     def copy(self, **overrides: Any) -> Agent:
@@ -167,6 +188,7 @@ class Agent:
             "model": self.model,
             "output_type": self.output_type,
             "schema": copy.deepcopy(self.schema),
+            "detached": self.detached,
         }
         unknown = set(overrides) - set(fields)
         if unknown:

@@ -182,7 +182,7 @@ class RaceLost(Stopped):
 class Unanswered(XmasError):
     """A question of a run no one answers later (``run``, ``run_batch``) got no answer and has no default.
 
-    It fails the run wherever the human node sits, a chain item or a box included.
+    It fails the run wherever the human action sits, a chain item or a module included.
     """
 
 
@@ -209,7 +209,7 @@ class BadFormat(XmasError):
     """A node's output did not have its declared form.
 
     An agent with an answer form raises it when its answer and its one retry
-    both fail the form; a step raises it when a write has the wrong type.
+    both fail the form; a code node raises it when a write has the wrong type.
 
     Attributes:
         node: The node whose output was refused.

@@ -17,7 +17,7 @@ A bundle's ``examples/<file>.yaml`` holds a few cases::
 
 A check is one mapping of one kind (:data:`CHECK_KINDS`) with an optional
 ``path``: a value name, then ``.field`` or ``[i]`` steps. Without a path a
-check judges the node's one write, or all its writes as one mapping. A step's
+check judges the node's one write, or all its writes as one mapping. A code node's
 case with ``recorded`` and no ``must`` checks that its writes equal it. In a
 run case ``expect`` keys an output or a node; a node's checks apply to its
 last visit, per item in a chain. A media input is a ref mapping whose
@@ -39,10 +39,10 @@ from xmas.agent import Agent
 from xmas.budget import Budget
 from xmas.bundle import LOCK, Lock, check_lock, code_hashes, dump_yaml, outside, put, read, read_yaml, relock
 from xmas.media import Ref, store
-from xmas.nodes import Step
+from xmas.nodes import Code
 from xmas.runtime import node_owner, node_types
 from xmas.schemas import compile_form
-from xmas.values import JSON, TEXT, ValueType, media_kind, parse_type, plain
+from xmas.values import JSON, TEXT, ValueType, parse_type, plain, ref_kind
 
 if TYPE_CHECKING:  # pragma: no cover
     from xmas.mas import MAS
@@ -497,7 +497,7 @@ def parse_rendered(text: str, vtype: ValueType) -> Any:
     if vtype == TEXT:
         return text
     value = json.loads(text)
-    if media_kind(vtype) is None:
+    if ref_kind(vtype) is None:
         return value
     if vtype.item is not None:
         return [None if item is None else Ref.from_dict(item) for item in value]
@@ -519,17 +519,17 @@ def cases_from_trace(mas: MAS, trace: Trace, nodes: Sequence[str] | None, store_
 
     A case comes from the node's first visit (item 0 in a chain) that did not
     fail: its inputs are the record's inputs mapped back from placeholders
-    (agents) or parameters (steps) to value names and parsed by type, a read
+    (agents) or parameters (code nodes) to value names and parsed by type, a read
     absent at that visit left out; ``recorded`` is its typed write. A json
     agent must give a valid answer with every top-level field of its form, a
-    text agent a non-empty one; a step must write what it wrote. Media are
+    text agent a non-empty one; a code node must write what it wrote. Media are
     copied into ``store_dir`` as ``<sha256[:16]><ext>``. With ``nodes=None``
-    every agent and step of ``mas`` that ran is taken, else exactly those named.
+    every agent and code node of ``mas`` that ran is taken, else exactly those named.
 
     Raises:
-        ValueError: For a named node that is no agent or step of ``mas``, or did not finish a first visit.
+        ValueError: For a named node that is no agent or code node of ``mas``, or did not finish a first visit.
     """
-    ran = [r.agent for r in trace.records if r.kind in ("agent", "step")]
+    ran = [r.agent for r in trace.records if r.kind in ("agent", "code")]
     chosen = list(dict.fromkeys(ran)) if nodes is None else list(nodes)
     cases = []
     for name in chosen:
@@ -547,8 +547,8 @@ def cases_from_trace(mas: MAS, trace: Trace, nodes: Sequence[str] | None, store_
             raise ValueError(f"node {name!r} finished no first visit in the trace")
         system = node_owner(mas, name)
         node = system.nodes[name]
-        if not isinstance(node, Agent | Step):
-            raise ValueError(f"node {name!r} is no agent or step: only those are recorded")
+        if not isinstance(node, Agent | Code):
+            raise ValueError(f"node {name!r} is no agent or code node: only those are recorded")
         reads, _ = node_types(system, node)
         shown = (
             {node.reads[key]: text for key, text in record.inputs.items()} if isinstance(node, Agent) else record.inputs
@@ -569,9 +569,9 @@ def cases_from_trace(mas: MAS, trace: Trace, nodes: Sequence[str] | None, store_
     return cases
 
 
-def default_checks(node: Agent | Step) -> list[Check]:
+def default_checks(node: Agent | Code) -> list[Check]:
     """Return a recorded node's checks: a json agent's form and its fields, a text agent's non-empty answer."""
-    if isinstance(node, Step):
+    if isinstance(node, Code):
         return []
     if parse_type(node.output_type) == JSON:
         form = compile_form(node.schema)

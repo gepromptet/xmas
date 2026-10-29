@@ -7,7 +7,7 @@ name, and `outputs=` names the values the trace hands back. Here are the pages o
 ```python
 pages = MAS(
     [page_writer],
-    steps=[Step("count", uses="count_words"), Step("total", uses="total_words")],
+    code_nodes=[Code("count", uses="count_words"), Code("total", uses="total_words")],
     edges=[("page_writer", "count"), ("count", "total")],
     each={"page_writer": ForEach("page", "plan.pages", key="id"), "count": "page in plan.pages"},
     inputs={"plan": "json"},

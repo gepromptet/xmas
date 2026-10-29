@@ -1,8 +1,8 @@
 # Once per item: `for each`
 
 A `for each` chain runs some nodes once per item of a list. Here a planner lists the
-pages of an answer in JSON. Each page is written and counted on its own, and a step
-outside the chain adds up the counts. `count_words` is the step of
+pages of an answer in JSON. Each page is written and counted on its own, and a code node
+outside the chain adds up the counts. `count_words` is the code node of
 [Steps and values](steps-and-values.md):
 
 ```python
@@ -25,7 +25,7 @@ planner = Agent(
 page_writer = Agent("page_writer", prompt="Write one page on: {page}", inputs=["page"], output="draft")
 deck = MAS(
     [planner, page_writer],
-    steps=[Step("count", uses="count_words"), Step("total", uses="total_words")],
+    code_nodes=[Code("count", uses="count_words"), Code("total", uses="total_words")],
     edges=[("planner", "page_writer"), ("page_writer", "count"), ("count", "total")],
     each={"page_writer": ForEach("page", "plan.pages", at_once=2, key="id"), "count": "page in plan.pages"},
     tools=[count_words, total_words],

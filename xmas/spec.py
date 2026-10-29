@@ -5,8 +5,8 @@ prompts, topology and model bindings, which per the design principles is the
 framework-agnostic artefact an optimization run produces. No LLM object, no
 compiled graph and no callable is ever part of it.
 
-A ``version: 2`` spec adds steps, boxes, typed values, answer forms, the edge
-forms of :mod:`xmas.edges`, ``frozen`` nodes and ``health`` settings, and keeps
+A ``version: 2`` spec adds code nodes, modules, typed values, answer forms, the edge
+forms of :mod:`xmas.edges`, ``detached`` nodes and ``health`` settings, and keeps
 its prompts in a top-level ``prompts`` section. It may declare ``outputs``; a
 node may run ``for each`` item of a list and ``retry`` on some error kinds; an
 agent may read values under placeholders of other names and share a prompt
@@ -15,8 +15,8 @@ bound model name, which kinds beyond text the model ``accepts`` and
 ``produces``, the catalogue id it stands for (``model``, default the name)
 and model parameters such as ``temperature``; never a URL or a key. A
 callable names code by ``import`` or a tool server by name (``server``), and
-may bind constant ``params``. Its ``humans`` are the nodes that ask a person
-(:class:`xmas.human.Human`), and an edge may be one of a ``first of`` race.
+may bind constant ``params``. Its ``human_actions`` are the nodes that ask a person
+(:class:`xmas.human.HumanAction`), and an edge may be one of a ``first of`` race.
 """
 
 from __future__ import annotations
@@ -41,12 +41,11 @@ V2_KEYS: dict[str, Any] = {
     "inputs": dict,
     "outputs": dict,
     "agents": list,
-    "steps": list,
-    "boxes": list,
-    "humans": list,
+    "code_nodes": list,
+    "modules": list,
+    "human_actions": list,
     "edges": list,
     "state": dict,
-    "frozen": list,
     "health": dict,
     "models": dict,
     "callables": dict,
@@ -69,20 +68,29 @@ ENTRIES: dict[str, tuple[str, frozenset[str], dict[str, Any]]] = {
             "tools": list,
             "schema": dict,
             "retry": dict,
+            "detached": bool,
         },
     ),
-    "steps": (
-        "Step",
+    "code_nodes": (
+        "Code",
         frozenset({"uses"}),
-        {"name": str, "uses": str, "for each": (str, dict), "reads": dict, "writes": dict, "retry": dict},
+        {
+            "name": str,
+            "uses": str,
+            "for each": (str, dict),
+            "reads": dict,
+            "writes": dict,
+            "retry": dict,
+            "detached": bool,
+        },
     ),
-    "boxes": (
-        "Box",
+    "modules": (
+        "MASModule",
         frozenset({"reads", "writes", "system"}),
-        {"name": str, "for each": (str, dict), "reads": dict, "writes": dict, "system": dict},
+        {"name": str, "for each": (str, dict), "reads": dict, "writes": dict, "system": dict, "detached": bool},
     ),
-    "humans": (
-        "Human",
+    "human_actions": (
+        "HumanAction",
         frozenset({"form", "writes"}),
         {
             "name": str,
@@ -97,6 +105,7 @@ ENTRIES: dict[str, tuple[str, frozenset[str], dict[str, Any]]] = {
             "edits": str,
             "timeout_s": (int, float),
             "default": dict,
+            "detached": bool,
         },
     ),
 }
@@ -112,6 +121,7 @@ WORDS = {
     (str, dict): "a string or a mapping",
     (list, dict): "a list or a mapping",
     (list, str): "a list or a string",
+    bool: "true or false",
 }
 
 
@@ -156,7 +166,7 @@ def check_fields(
         problem = f"has unknown keys {unknown}" if unknown else f"is missing the keys {missing}"
         raise ValueError(f"{where} {problem}; it takes {sorted(fields)}{note if unknown else ''}.")
     for key, value in entry.items():
-        if isinstance(value, bool) or not isinstance(value, fields[key]):
+        if (isinstance(value, bool) and fields[key] is not bool) or not isinstance(value, fields[key]):
             raise ValueError(f"{where} needs {key!r} to be {WORDS[fields[key]]}, got {value!r}.")
 
 
@@ -169,7 +179,7 @@ def validate_spec_v2(data: dict[str, Any]) -> dict[str, Any]:
     """
     check_fields(data, "Spec", V2_KEYS)
     check_version_is_2(data)
-    check_boxes_hold_specs(data)
+    check_modules_hold_specs(data)
     check_entries(data)
     check_callables(data)
     check_fields(data.get("health", {}), "Spec 'health'", HEALTH)
@@ -185,18 +195,18 @@ def check_version_is_2(data: dict[str, Any]) -> None:
         raise ValueError(f"A version 2 spec needs 'version: 2', not {data.get('version')!r}.")
 
 
-def check_boxes_hold_specs(data: dict[str, Any]) -> None:
-    """Refuse a box that names its system by path: from_dict needs the system's spec itself."""
-    for entry in data.get("boxes", []):
+def check_modules_hold_specs(data: dict[str, Any]) -> None:
+    """Refuse a module that names its system by path: from_dict needs the system's spec itself."""
+    for entry in data.get("modules", []):
         if isinstance(entry, dict) and isinstance(entry.get("system"), str):
             raise ValueError(
-                f"Box {entry.get('name')!r} names its system {entry['system']!r}: MAS.load reads a bundle's boxes; "
-                "from_dict needs the system's spec."
+                f"MASModule {entry.get('name')!r} names its system {entry['system']!r}: "
+                "MAS.load reads a bundle's modules; from_dict needs the system's spec."
             )
 
 
 def check_entries(data: dict[str, Any]) -> None:
-    """Check the keys and value types of each agent, step, box and human."""
+    """Check the keys and value types of each agent, code node, module and human."""
     for section, (label, required, fields) in ENTRIES.items():
         for index, entry in enumerate(data.get(section, [])):
             if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):

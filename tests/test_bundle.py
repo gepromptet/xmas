@@ -1,4 +1,4 @@
-"""The ``.mas`` bundle: save and load as a folder or a zip, prompt files, nested boxes, callables, the lock.
+"""The ``.mas`` bundle: save and load as a folder or a zip, prompt files, nested modules, callables, the lock.
 
 A bundle names models and tool servers and holds no address or key; loading it
 checks the model names against the configured catalogue and refuses runs while
@@ -41,7 +41,7 @@ from xmas.config import (
 from xmas.llms.api_llm import APILLM
 from xmas.llms.meta import TokenPrice
 from xmas.media import Capabilities
-from xmas.nodes import Step
+from xmas.nodes import Code
 from xmas.tools import Tool, ToolSource, tool
 from xmas.tools.mcp import MCPTools
 from xmas.verify import VerifyWarning
@@ -311,10 +311,10 @@ def test_boxes_nest_and_mcp_names_its_server(tmp_path: Path) -> None:
     made = example_mas()
     path = made.save(tmp_path / "example.mas")
     names = sorted(read(path))
-    assert {"boxes/shorten.mas/xmas.yaml", "boxes/shorten.mas/prompts/cutter.md"} <= set(names)
-    assert not any(name.startswith("boxes/") and name.endswith(LOCK) for name in names)
+    assert {"modules/shorten.mas/xmas.yaml", "modules/shorten.mas/prompts/cutter.md"} <= set(names)
+    assert not any(name.startswith("modules/") and name.endswith(LOCK) for name in names)
     wiring = yaml.safe_load((path / "xmas.yaml").read_text(encoding="utf-8"))
-    assert wiring["boxes"][0]["system"] == "boxes/shorten.mas"
+    assert wiring["modules"][0]["system"] == "modules/shorten.mas"
     callables = yaml.safe_load((path / "callables.yaml").read_text(encoding="utf-8"))
     assert callables["web_fetch"] == {
         "kind": "mcp",
@@ -362,13 +362,13 @@ def test_box_paths_and_server_addresses_are_refused(tmp_path: Path) -> None:
     path = made.save(tmp_path / "example.mas")
     wiring = yaml.safe_load((path / "xmas.yaml").read_text(encoding="utf-8"))
     llms: dict[str, BaseLLM] = {"text-model": MockLLM(turns=[])}
-    wiring["boxes"][0]["system"] = "../shorten.mas"
+    wiring["modules"][0]["system"] = "../shorten.mas"
     (path / "xmas.yaml").write_text(yaml.safe_dump(wiring), encoding="utf-8")
     with pytest.raises(ValueError, match=r"'../shorten.mas' is outside the bundle"):
         MAS.load(path, llms=llms, tools=[RemoteTools()], config=NO_CATALOGUE)
     spec = made.to_dict()
-    spec["boxes"][0]["system"] = "boxes/shorten.mas"
-    with pytest.raises(ValueError, match=r"names its system 'boxes/shorten.mas': MAS.load reads a bundle's boxes"):
+    spec["modules"][0]["system"] = "modules/shorten.mas"
+    with pytest.raises(ValueError, match=r"names its system 'modules/shorten.mas': MAS.load reads a bundle's modules"):
         MAS.from_dict(spec, llms=llms, tools=[*conftest_tools(), RemoteTools()])
     spec = made.to_dict()
     spec["callables"]["web_fetch"]["server"] = "https://tools.example.com/mcp"
@@ -394,13 +394,13 @@ def test_a_box_runs_on_its_own_default_model(tmp_path: Path) -> None:
     made = example_mas()
     llms: dict[str, BaseLLM] = {"text-model": MockLLM(turns=[])}
     spec = made.to_dict() | {"default_model": "text-model"}
-    spec["boxes"][0]["system"]["default_model"] = "cut-model"
+    spec["modules"][0]["system"]["default_model"] = "cut-model"
     two = MAS.from_dict(spec, llms=llms, tools=[*conftest_tools(), RemoteTools()])
     boxed = MAS.load(two.save(tmp_path / "two.mas"), tools=[RemoteTools()], config=NO_CATALOGUE)
-    inner = boxed.boxes["shorten"].system
+    inner = boxed.modules["shorten"].system
     built = {name: llm.model for name, llm in boxed.llms.items() if isinstance(llm, Unconfigured)}
-    assert built == {"text-model": "text-model", "cut-model": "cut-model"}  # the box's own default is built
-    assert inner.resolve_llm(inner.agents["cutter"]) is boxed.llms["cut-model"]  # and the box runs on it
+    assert built == {"text-model": "text-model", "cut-model": "cut-model"}  # the module's own default is built
+    assert inner.resolve_llm(inner.agents["cutter"]) is boxed.llms["cut-model"]  # and the module runs on it
 
 
 class OfflineMCP(MCPTools):
@@ -485,11 +485,11 @@ def test_save_rewrites_only_what_changed(tmp_path: Path) -> None:
     assert (path / "examples/warmup.yaml").exists()
 
     (path / "callables.yaml").write_text("render_page: [unclosed\n", encoding="utf-8")
-    example_mas().save(path)  # another system: the deck's files go, a box comes
-    assert {"boxes/shorten.mas/xmas.yaml", "callables.yaml"} <= set(read(path))
+    example_mas().save(path)  # another system: the deck's files go, a module comes
+    assert {"modules/shorten.mas/xmas.yaml", "callables.yaml"} <= set(read(path))
     assert not (path / "prompts/drafter.md").exists()
     deck().save(path)
-    assert not (path / "boxes").exists()
+    assert not (path / "modules").exists()
     assert "render_page:" in (path / "callables.yaml").read_text(encoding="utf-8")
     with pytest.raises(ValueError, match=r"Prompt name '\.\./evil' cannot be a file name in a bundle"):
         MAS([Agent("noter", "Notes on {query}", "notes")], llm=MockLLM(), prompt_names={"noter": "../evil"}).save(path)
@@ -541,7 +541,7 @@ STEPS_BUNDLE = {
     "xmas.yaml": """\
 version: 2
 outputs: {padded: text}
-steps:
+code_nodes:
 - {name: loud, uses: shout, reads: {text: query}}
 - {name: wide, uses: pad, reads: {text: shout}}
 edges: [loud -> wide]
@@ -561,7 +561,7 @@ pad:   # padded to ten
 def steps_bundle(root: Path, monkeypatch: pytest.MonkeyPatch, callables: str | None = None) -> Path:
     (root / "stepsmod.py").write_text(STEPS_MODULE, encoding="utf-8")
     monkeypatch.syspath_prepend(str(root))
-    path = root / "steps.mas"
+    path = root / "code_nodes.mas"
     path.mkdir(exist_ok=True)
     (path / "xmas.yaml").write_text(STEPS_BUNDLE["xmas.yaml"], encoding="utf-8")
     (path / "callables.yaml").write_text(callables or STEPS_BUNDLE["callables.yaml"], encoding="utf-8")
@@ -580,11 +580,11 @@ def test_callables_load_by_import_path(tmp_path: Path, monkeypatch: pytest.Monke
         MAS.load(path, config=NO_CATALOGUE)  # imported, but a plain function is wrapped only when trusted
     shell = "shell: {kind: python, import: 'os:system', params: {command: 'echo hi'}, writes: {code: json}}\n"
     (path / "callables.yaml").write_text(shell, encoding="utf-8")
-    (path / "xmas.yaml").write_text("version: 2\nsteps:\n- {name: go, uses: shell, reads: {}}\n", encoding="utf-8")
+    (path / "xmas.yaml").write_text("version: 2\ncode_nodes:\n- {name: go, uses: shell, reads: {}}\n", encoding="utf-8")
     with pytest.raises(ValueError, match=r"'os:system' is not a tool made with @tool"):
         MAS.load(path, config=NO_CATALOGUE)
     path = steps_bundle(tmp_path, monkeypatch)
-    item, _ = mas.resolve_callable(mas.steps["wide"])
+    item, _ = mas.resolve_callable(mas.code_nodes["wide"])
     assert (item.params, sorted(item.reads), item(text="a")) == ({"width": 10}, ["text"], "a.........")
     assert mas.to_dict()["callables"]["pad"]["params"] == {"width": 10}
     assert mas.to_dict()["callables"]["pad"]["import"] == "stepsmod:pad"
@@ -668,10 +668,10 @@ def test_lock_compare_and_code_hashes(tmp_path: Path, monkeypatch: pytest.Monkey
         with pytest.raises(ValueError, match=r"is not a lock written by MAS.save"):
             Lock.from_yaml(text)  # the last: a line changed to match an edited file, the digest left as it was
 
-    steps = steps_bundle(tmp_path, monkeypatch)
-    mas = MAS.load(steps, config=NO_CATALOGUE, trust=True)
-    mas.save(steps)
-    saved = Lock.from_yaml((steps / LOCK).read_text(encoding="utf-8"))
+    code_nodes = steps_bundle(tmp_path, monkeypatch)
+    mas = MAS.load(code_nodes, config=NO_CATALOGUE, trust=True)
+    mas.save(code_nodes)
+    saved = Lock.from_yaml((code_nodes / LOCK).read_text(encoding="utf-8"))
     assert sorted(saved.code) == ["pad", "shout"]
     assert all(saved.code.values())
     module = tmp_path / "stepsmod.py"
@@ -681,14 +681,14 @@ def test_lock_compare_and_code_hashes(tmp_path: Path, monkeypatch: pytest.Monkey
     import importlib
 
     importlib.reload(sys.modules["stepsmod"])
-    changed = MAS.load(steps, config=NO_CATALOGUE, trust=True)
-    assert compare(saved, read(steps), mas_bundle.code_hashes(changed)).code_changed == ("shout",)
+    changed = MAS.load(code_nodes, config=NO_CATALOGUE, trust=True)
+    assert compare(saved, read(code_nodes), mas_bundle.code_hashes(changed)).code_changed == ("shout",)
 
     namespace: dict[str, Any] = {}
     exec("def echo(query):\n    return query\n", namespace)  # no source file to read
     schema = {"type": "object", "properties": {"query": {"type": "string"}}}
     echo = Tool("echo", "Echo.", schema, fn=namespace["echo"], writes={"echo": "text"})
-    unread = MAS([], steps=[Step("e", "echo")], tools=[echo], llm=MockLLM())
+    unread = MAS([], code_nodes=[Code("e", "echo")], tools=[echo], llm=MockLLM())
     assert mas_bundle.code_hashes(unread) == {"echo": None}
     assert compare(Lock("x", {}, {"echo": "old"}), {}, {"echo": None}).code_changed == ()  # no source: skipped
 
@@ -943,7 +943,7 @@ def test_the_command_line_inits_checks_and_shows(tmp_path: Path, out: CommandLin
     assert out(0, "check", str(path)) == "ok: 7 nodes, 6 edges, 2 chains\n"
     shown = out(0, "show", str(path))
     assert "  checker -> drafter  while not verdict.fits (max 2)" in shown
-    assert "  render          step   render_page  draft text -> measure json  for each page in plan.slides" in shown
+    assert "  render          code   render_page  draft text -> measure json  for each page in plan.slides" in shown
     assert json.loads(out(0, "show", "--json", str(path))) == deck().describe()
     (path / "examples").mkdir()
     (path / "examples" / "warmup.yaml").write_text("version: 1\nexamples: [{name: a, nodes: x}]\n", "utf-8")

@@ -30,7 +30,7 @@ from xmas.config import Config, Unconfigured, config_path
 from xmas.examples import parse_examples
 from xmas.mas import MAS
 from xmas.store import open_store
-from xmas.values import TEXT, ValueType, media_kind, plain
+from xmas.values import TEXT, ValueType, plain, ref_kind
 from xmas.verify import VerifyWarning
 
 if TYPE_CHECKING:
@@ -232,13 +232,13 @@ def show_command(args: argparse.Namespace) -> int:
 def value(text: str, vtype: ValueType) -> Any:
     if vtype == TEXT:
         return text
-    if vtype.item is None and media_kind(vtype) is not None:
+    if vtype.item is None and ref_kind(vtype) is not None:
         return Path(text)
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError:
         raise UsageError(f"a {vtype} input is JSON, not {text!r}") from None
-    return [Path(item) for item in parsed] if media_kind(vtype) is not None and isinstance(parsed, list) else parsed
+    return [Path(item) for item in parsed] if ref_kind(vtype) is not None and isinstance(parsed, list) else parsed
 
 
 def run_command(args: argparse.Namespace) -> int:

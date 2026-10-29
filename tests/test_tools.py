@@ -29,7 +29,7 @@ from xmas.tools import (
     Tool,
     ToolCallRequest,
     ToolSource,
-    run_step,
+    run_code,
     tool,
 )
 from xmas.utils import timestamp
@@ -580,25 +580,25 @@ def test_a_step_writes_media_as_stored_refs(monkeypatch: pytest.MonkeyPatch, tmp
     page = {"type": "object", "properties": {"page": {"type": "string"}}}
     paint = Tool("draw", "Draw a page.", page, fn=draw, writes={"png": "image"})
     source = LocalTools([paint])
-    first = run_step(paint, source, {"page": "1"})["png"]  # the file is rewritten for page 2
-    second = run_step(paint, source, {"page": "2"})["png"]
+    first = run_code(paint, source, {"page": "1"})["png"]  # the file is rewritten for page 2
+    second = run_code(paint, source, {"page": "2"})["png"]
     assert isinstance(first, Ref)
     assert first.location.startswith(str(tmp_path / "store"))
     assert (first.read_bytes(), second.read_bytes(), first.media_type) == (b"png-1", b"png-2", "image/png")
 
     raw = Tool("raw", "Return bytes.", page, fn=lambda page: b"png", writes={"png": "image"})
     with pytest.raises(BadFormat, match=r"got bytes; return a Path or a Ref, Ref\.from_bytes stores bytes"):
-        run_step(raw, LocalTools([raw]), {"page": "1"})
+        run_code(raw, LocalTools([raw]), {"page": "1"})
 
     remote = Tool("paint", "Paint remotely.", page, writes={"png": "image"})
     with pytest.raises(XmasError, match="returns text only, so 'paint' cannot write media"):
-        run_step(remote, FakeToolSource(["paint"]), {"page": "1"})
+        run_code(remote, FakeToolSource(["paint"]), {"page": "1"})
 
     lost = Tool(
         "lost", "Return a path to nothing.", page, fn=lambda page: tmp_path / "gone.png", writes={"png": "image"}
     )
     with pytest.raises(BadFormat, match=r"'lost': png: .*gone\.png is not a file"):
-        run_step(lost, LocalTools([lost]), {"page": "1"})
+        run_code(lost, LocalTools([lost]), {"page": "1"})
 
 
 def test_an_agent_never_gets_a_tool_that_reads_media(tmp_path: Path) -> None:

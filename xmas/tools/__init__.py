@@ -14,9 +14,9 @@ text answer. Every call is kept as a :class:`~xmas.trace.ToolCall` on the
 agent's record. A tool that fails is data (the model sees the error and may try
 again); a source that refuses the caller ends the run.
 
-The same registry serves steps (version 2): a :class:`~xmas.nodes.Step` names a
-tool in ``uses`` and :func:`run_step` runs it with values from the graph. A tool
-reads its parameters (:attr:`Tool.reads`) and writes :attr:`Tool.writes`. A step
+The same registry serves code nodes (version 2): a :class:`~xmas.nodes.Code` names a
+tool in ``uses`` and :func:`run_code` runs it with values from the graph. A tool
+reads its parameters (:attr:`Tool.reads`) and writes :attr:`Tool.writes`. A code node
 that writes a picture, a sound or a file returns a :class:`~pathlib.Path` (copied
 into the store) or a :class:`~xmas.media.Ref`; a remote one sends media blocks
 (:meth:`ToolSource.call_media`).
@@ -48,7 +48,7 @@ from xmas.tools.schema import (
     valid_tool_name,
 )
 from xmas.trace import TokenUsage, ToolCall
-from xmas.values import TEXT, ValueType, check_value, coerce_media, media_kind, parse_type, type_of_hint
+from xmas.values import TEXT, ValueType, check_value, coerce_ref, parse_type, ref_kind, type_of_hint
 
 if TYPE_CHECKING:  # pragma: no cover
     from promptolution.llms.base_llm import BaseLLM
@@ -66,7 +66,7 @@ __all__ = [
     "ToolSource",
     "execute_tool_call",
     "index_tools",
-    "run_step",
+    "run_code",
     "run_tool_loop",
     "select_tools",
     "tool",
@@ -94,7 +94,7 @@ class Tool:
         parameters: JSON Schema of the arguments object.
         fn: The implementation for a local tool, ``None`` for a remote one (called
             through its source).
-        writes: What the tool writes when it runs as a step, ``{write name:
+        writes: What the tool writes when it runs as a code node, ``{write name:
             type}``. It may be given as type words; ``None`` is one write named
             like the tool: text when ``fn``'s return hint is ``str`` or the tool
             is remote, json otherwise.
@@ -143,7 +143,7 @@ class Tool:
 
     @property
     def reads(self) -> dict[str, ValueType]:
-        """The type each parameter reads when the tool runs as a step: text for a ``string``, else json."""
+        """The type each parameter reads when the tool runs as a code node: text for a ``string``, else json."""
         properties = self.parameters.get("properties") or {}
         return {name: type_of_hint(schema) for name, schema in properties.items()}
 
@@ -322,7 +322,7 @@ def tool(
             positional-only parameters are rejected. Google-style ``Args:``
             entries become the parameter descriptions.
         name: Tool name. Defaults to ``fn.__name__``.
-        writes: What the tool writes as a step, ``{write name: type}``. Defaults
+        writes: What the tool writes as a code node, ``{write name: type}``. Defaults
             to one write named like the tool: text when the return hint is
             ``str``, else json. Several writes need ``fn`` to return a mapping
             with exactly those keys.
@@ -391,10 +391,10 @@ def select_tools(index: ToolIndex, agent: Agent, llm: BaseLLM | None) -> ToolInd
         raise ValueError(f"Agent {agent.name!r} uses unknown tools {unknown}; available: {sorted(index)}.")
     for name in agent.tools:
         for parameter, vtype in index[name][0].reads.items():
-            if media_kind(vtype) is not None:
+            if ref_kind(vtype) is not None:
                 raise ValueError(
                     f"Agent {agent.name!r} uses tool {name!r}, which reads {vtype} {parameter!r}; a model passes "
-                    "no media to a tool, so run it as a step."
+                    "no media to a tool, so run it as a code node."
                 )
     if llm is not None and not hasattr(llm, "get_tool_response"):
         raise ValueError(
@@ -403,15 +403,15 @@ def select_tools(index: ToolIndex, agent: Agent, llm: BaseLLM | None) -> ToolInd
     return {name: index[name] for name in agent.tools}
 
 
-def run_step(spec: Tool, source: ToolSource, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Run a callable as a step and return ``{write: value}``, keyed by its own write names.
+def run_code(spec: Tool, source: ToolSource, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Run a callable as a code node and return ``{write: value}``, keyed by its own write names.
 
     A local tool's ``fn`` is called here, not through :meth:`LocalTools.call`,
     which would turn its result into text, and what it raises passes unchanged;
     a remote tool runs through ``source.call``, and a json write is the JSON its
     text holds. One write takes the whole result; several need a mapping with
     exactly those keys. A media write takes a ref, or a :class:`~pathlib.Path`
-    whose bytes are copied into :func:`~xmas.media.store`, so a step that
+    whose bytes are copied into :func:`~xmas.media.store`, so a code node that
     rewrites one path per item leaves earlier refs intact; a remote tool's one
     media write is its :meth:`~ToolSource.call_media` blocks, stored (exactly one
     for a single value).
@@ -426,7 +426,7 @@ def run_step(spec: Tool, source: ToolSource, arguments: dict[str, Any]) -> dict[
     only = next(iter(writes.values())) if len(writes) == 1 else None
     if spec.fn is not None:
         result = spec.fn(**kwargs)
-    elif only is not None and media_kind(only) is not None:
+    elif only is not None and ref_kind(only) is not None:
         result = stored_blocks(spec.name, source.call_media(spec.name, kwargs), only)
     else:
         text = source.call(spec.name, kwargs)
@@ -444,7 +444,7 @@ def run_step(spec: Tool, source: ToolSource, arguments: dict[str, Any]) -> dict[
     media, problems = store(), []
     for name, value in produced.items():
         try:
-            produced[name] = coerce_media(value, writes[name], store=media)
+            produced[name] = coerce_ref(value, writes[name], store=media)
         except ValueError as error:  # a returned Path that is no file
             raise BadFormat(spec.name, (f"{name}: {error}",)) from error
         if (problem := check_value(produced[name], writes[name])) is not None:

@@ -100,7 +100,7 @@ class PrefixSearchOptimizer(MASOptimizer):
         self.step = 0
 
     def target_agent(self) -> str:
-        """Return the least-credited agent not frozen, else the next one round-robin, so the sweep is deterministic."""
+        """Return the least-credited agent not detached, else the next one round-robin: a deterministic sweep."""
         names = movable_agents(self.mas)
         return weakest(names, self.credit) or names[self.step % len(names)]
 

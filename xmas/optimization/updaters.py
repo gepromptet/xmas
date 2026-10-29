@@ -26,12 +26,12 @@ __all__ = [
 
 
 def movable_agents(mas: MAS) -> list[str]:
-    """Return the agents not frozen, in the system's order; ``ValueError`` when every agent is frozen.
+    """Return the agents not detached, in the system's order; ``ValueError`` when every agent is detached.
 
     Agents sharing a prompt are one prompt to optimize: the first of them
-    stands for all, and none moves when one of them is frozen.
+    stands for all, and none moves when one of them is detached.
     """
-    seen = {mas.prompt_names.get(name, name) for name in mas.frozen}
+    seen = {mas.prompt_names.get(name, name) for name in mas.detached}
     names = []
     for name in mas.agents:
         key = mas.prompt_names.get(name, name)
@@ -39,7 +39,7 @@ def movable_agents(mas: MAS) -> list[str]:
             names.append(name)
         seen.add(key)
     if not names:
-        raise ValueError(f"Every agent is frozen ({sorted(mas.frozen)}); there is no prompt to optimize.")
+        raise ValueError(f"Every agent is detached ({sorted(mas.detached)}); there is no prompt to optimize.")
     return names
 
 
@@ -83,7 +83,7 @@ class PromptUpdater:
         The agent with the least credit is the one whose prompt is holding the
         system back, so it is where a prompt change has the most to gain. With no
         credit available, the first agent in graph order is used, which is
-        deterministic and therefore reproducible. A frozen agent is never chosen.
+        deterministic and therefore reproducible. A detached agent is never chosen.
         """
         names = movable_agents(mas)
         return weakest(names, credit) or names[0]

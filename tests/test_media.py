@@ -32,14 +32,14 @@ from xmas.tools import tool
 from xmas.values import (
     FILE,
     JSON,
-    MEDIA,
+    REF_TYPES,
     TEXT,
     check_value,
-    coerce_media,
+    coerce_ref,
     fits,
-    media_kind,
     parse_type,
     plain,
+    ref_kind,
     render_value,
     type_of_hint,
 )
@@ -158,8 +158,8 @@ def case_kinds(tmp_path: Path) -> None:
     ]
     csv = Ref("/t.csv", "text/csv")
     assert (fits_kind(csv, "table"), fits_kind(csv, "file"), fits_kind(csv, "image")) == (True, True, False)
-    assert [str(vtype) for vtype in MEDIA] == ["image", "audio", "document", "table", "file"]
-    assert [media_kind(parse_type(t)) for t in ("image", "list of list of audio", "text", "list of json")] == [
+    assert [str(vtype) for vtype in REF_TYPES] == ["image", "audio", "document", "table", "file"]
+    assert [ref_kind(parse_type(t)) for t in ("image", "list of list of audio", "text", "list of json")] == [
         "image",
         "audio",
         None,
@@ -275,19 +275,19 @@ def case_coerce(tmp_path: Path) -> None:
     picture = tmp_path / "a.png"
     picture.write_bytes(PNG)
     image, images = parse_type("image"), parse_type("list of image")
-    by_reference = coerce_media(picture, image)
+    by_reference = coerce_ref(picture, image)
     assert by_reference == Ref.from_path(picture)
     shelf = FileStore(tmp_path / "shelf")
-    copied = coerce_media([picture, None], images, store=shelf)
+    copied = coerce_ref([picture, None], images, store=shelf)
     assert copied[1] is None
     assert copied[0].location.startswith(str(shelf.root))
     assert copied[0].media_type == "image/png"
     picture.write_bytes(b"\x89PNG-b")
     assert copied[0].read_bytes() == PNG
-    assert coerce_media(picture, TEXT) is picture
-    assert coerce_media("a.png", image) == "a.png"
-    assert coerce_media(by_reference, image) is by_reference
-    assert coerce_media(picture, images) is picture
+    assert coerce_ref(picture, TEXT) is picture
+    assert coerce_ref("a.png", image) == "a.png"
+    assert coerce_ref(by_reference, image) is by_reference
+    assert coerce_ref(picture, images) is picture
 
 
 def case_capabilities(tmp_path: Path) -> None:

@@ -1,6 +1,6 @@
 """Built-in conversions: a document to text and a table to rows.
 
-A model reads a document or a table only through a conversion step, so what
+A model reads a document or a table only through a conversion code node, so what
 it was shown is a visible node with a record. These two read the plain formats
 with the standard library; a pdf or a spreadsheet needs a step of your own.
 Pass them like any callable: ``MAS(..., tools=[document_text])``, and in a

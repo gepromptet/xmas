@@ -273,7 +273,7 @@ class QuestionRow:
     Attributes:
         question_id: The question's id.
         run_id: The run that asked it.
-        node: The human node that asked it.
+        node: The human action that asked it.
         form: The node's form, such as ``approve``.
         shown: What the person was shown, by name.
         asked_at: When it was asked, ISO UTC.
@@ -571,7 +571,7 @@ class Store(BaseCheckpointSaver[str]):
         return tuple(calls)
 
     def own_records(self, run_id: str, before: int | None = None) -> dict[int, AgentRecord]:
-        """Return the run's own records (not a box's inner ones) by position, in the order kept; those ``before``."""
+        """Return the run's own records (not a module's inner ones) by position, in the order kept; those ``before``."""
         rows = self.execute(
             "SELECT position, record FROM xmas_records WHERE run_id = ? AND boxed = 0 AND position < ?"
             " ORDER BY position",
@@ -715,7 +715,7 @@ class RunLog:
             )
 
     def record(self, record: AgentRecord, *, boxed: bool = False) -> None:
-        """Write a visit's record the moment it is kept; ``boxed`` for a record of a box's inner system."""
+        """Write a visit's record the moment it is kept; ``boxed`` for a record of a module's inner system."""
         position = next(self.positions)
         if not boxed:
             self.kept.setdefault(visit(record), []).append((position, record))

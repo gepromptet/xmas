@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from xmas import MAS, Agent, Budget, Edge, MASTask, Step
+from xmas import MAS, Agent, Budget, Code, Edge, MASTask
 from xmas.edges import EdgeKind
 from xmas.graph import END, START, back_edges
 from xmas.health import HealthSettings
@@ -320,13 +320,20 @@ def test_the_population_keeps_the_best_candidates_as_future_parents() -> None:
 
 
 def judged(*, branches: bool = False) -> MAS:
-    """Build planner -> writer -> count -> judge: a step, a frozen json judge, health and every runtime field set.
+    """Build planner -> writer -> count -> judge: a code node, a detached json judge, health, every runtime field.
 
     With ``branches``, the judge decides between ``publish`` and ``apology``,
     which both feed ``final``.
     """
     agents = [
-        Agent("judge", "Judge {draft}: {counts}", output="verdict", inputs=["draft", "counts"], output_type="json"),
+        Agent(
+            "judge",
+            "Judge {draft}: {counts}",
+            output="verdict",
+            inputs=["draft", "counts"],
+            output_type="json",
+            detached=True,
+        ),
         Agent("planner", "Plan an answer to {query}", output="plan"),
         Agent("writer", "Write about {query} along {plan}", output="draft", inputs=["query", "plan"], model="strong"),
     ]
@@ -352,7 +359,7 @@ def judged(*, branches: bool = False) -> MAS:
     return MAS(
         agents=agents,
         edges=edges,
-        steps=[Step("count", uses="count_words")],
+        code_nodes=[Code("count", uses="count_words")],
         llm=MockLLM(answer),
         llms={"strong": MockLLM(answer)},
         max_steps=17,
@@ -362,14 +369,13 @@ def judged(*, branches: bool = False) -> MAS:
         budget=Budget(max_calls=50),
         inputs={"query": "text"},
         state=state,
-        frozen=("judge",),
         health=HealthSettings(min_samples=2),
     )
 
 
-def test_graph_updater_keeps_kinds_frozen_and_conditions(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A rebuild must not drop a field of the system, nor turn a step into an
-    # agent: steps stay steps, every field reaches the candidate, and a
+def test_graph_updater_keeps_kinds_detached_and_conditions(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A rebuild must not drop a field of the system, nor turn a code node into an
+    # agent: code nodes stay code nodes, every field reaches the candidate, and a
     # candidate the check refuses (say the writer was removed, so nothing
     # writes the draft) is dropped rather than raised.
     budget = TopologyBudget(min_agents=2, max_agents=7, max_edges=12)
@@ -379,11 +385,11 @@ def test_graph_updater_keeps_kinds_frozen_and_conditions(monkeypatch: pytest.Mon
 
     assert candidates
     for candidate in candidates:
-        assert candidate.steps == mas.steps
-        assert isinstance(candidate.steps["count"], Step)
+        assert candidate.code_nodes == mas.code_nodes
+        assert isinstance(candidate.code_nodes["count"], Code)
         assert "count" not in candidate.agents
         assert candidate.agents["judge"] == mas.agents["judge"]
-        kept = ("version", "inputs", "merges", "boxes", "frozen", "health")
+        kept = ("version", "inputs", "merges", "modules", "detached", "health")
         assert [getattr(candidate, name) for name in kept] == [getattr(mas, name) for name in kept]
         runtime = ("llm", "llms", "max_steps", "default_model", "tools", "max_tool_rounds", "max_visits", "budget")
         assert [getattr(candidate, name) for name in runtime] == [getattr(mas, name) for name in runtime]
@@ -401,17 +407,18 @@ def test_graph_updater_keeps_kinds_frozen_and_conditions(monkeypatch: pytest.Mon
         for name in ("judge", "publish", "apology"):
             assert candidate.agents[name] == branched.agents[name]
         assert {("count", "judge"), ("publish", "final"), ("apology", "final")} <= set(proposer.edges_of(candidate))
-        assert candidate.steps == branched.steps
+        assert candidate.code_nodes == branched.code_nodes
 
-    # Credit never steers a topology candidate to the frozen judge, which no candidate may rewire.
+    # Credit never steers a topology candidate to the detached judge, which no candidate may rewire.
     credit = {"judge": [-1.0], "writer": [0.5], "planner": [0.2]}
     assert updater(seed=2, budget=budget).weakest_agent(mas, credit) == "planner"
     assert updater(seed=2, budget=budget).weakest_agent(mas, {"judge": [-1.0]}) is None
 
-    # A prompt optimizer never picks the frozen judge, not even when it earned least.
+    # A prompt optimizer never picks the detached judge, not even when it earned least.
     prompts = PromptUpdater(object, None)  # type: ignore[arg-type]
     assert prompts.target_agent(mas, {}) == "planner"
     assert prompts.target_agent(mas, {"judge": [-1.0], "writer": [0.5], "planner": [0.2]}) == "planner"
-    monkeypatch.setattr(mas, "frozen", frozenset(mas.agents))
-    with pytest.raises(ValueError, match="frozen"):
+    for agent in mas.agents.values():
+        monkeypatch.setattr(agent, "detached", True)
+    with pytest.raises(ValueError, match="detached"):
         prompts.target_agent(mas, {})

@@ -434,7 +434,7 @@ def test_parts_request_body(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     assert marker(Ref("https://h/d/x.wav", "audio/wav")) == "[audio x.wav, audio/wav]"
     assert marker(Ref("/s/x.png", "image/png", 3 * 1024 * 1024 + 400_000)) == "[image x.png, image/png, 3.4 MB]"
 
-    # to_content: data URIs, URLs as they are, wav and mp3, nothing a model reads through a conversion step
+    # to_content: data URIs, URLs as they are, wav and mp3, nothing a model reads through a conversion code node
     wav, mp3 = picture(tmp_path, "v.wav", b"RIFF"), picture(tmp_path, "v.mp3", b"ID3")
     remote = Ref("https://cdn.example/p.png", "image/png")
     assert to_content(["Look", a, remote, wav, mp3]) == [
@@ -448,8 +448,8 @@ def test_parts_request_body(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
         (Ref("/s/big.png", "image/png", MAX_PART_BYTES + 1), r"\[image big.png, image/png, 20.0 MB\] is over"),
         (Ref("https://h/a.wav", "audio/wav"), "audio is sent as bytes, and xmas reads no network"),
         (picture(tmp_path, "v.ogg", b"Ogg"), "a model takes wav or mp3 audio, not audio/ogg"),
-        (picture(tmp_path, "d.pdf", b"%PDF"), "a model reads a document through a conversion step"),
-        (picture(tmp_path, "t.csv", b"a,b"), "a model reads a table through a conversion step"),
+        (picture(tmp_path, "d.pdf", b"%PDF"), "a model reads a document through a conversion code node"),
+        (picture(tmp_path, "t.csv", b"a,b"), "a model reads a table through a conversion code node"),
     ]
     for ref, match in refused:
         with pytest.raises(ValueError, match=match):

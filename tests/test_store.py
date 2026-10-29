@@ -20,7 +20,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from xmas import MAS, Agent, Box
+from xmas import MAS, Agent, MASModule
 from xmas.config import runs_path
 from xmas.errors import ErrorKind
 from xmas.health import Flag, Health
@@ -382,7 +382,7 @@ def check_the_logged_calls(store: Store, trace: Trace) -> None:
 
 
 def check_every_entry_point_writes_through(store: Store) -> None:
-    """Version 1 and a batch, a failure, a box: every entry point writes its run to ``store``."""
+    """Version 1 and a batch, a failure, a module: every entry point writes its run to ``store``."""
     v1 = MAS([Agent("a", "Answer {query}", "answer")], llm=MockLLM())
     batch = v1.run_batch(["x", "y"])
     v1.predict("Say {query}", ["z"])
@@ -397,7 +397,9 @@ def check_every_entry_point_writes_through(store: Store) -> None:
     assert again.status == "failed"
     assert again.error_kind == failed.error_kind
     inner = MAS([Agent("cut", "Cut {page}", "short", ["page"])], inputs={"page": "text"}, llm=MockLLM())
-    boxed = MAS([], boxes=[Box("summarize", inner, reads={"page": "query"}, writes={"short": "short"})], llm=inner.llm)
+    boxed = MAS(
+        [], modules=[MASModule("summarize", inner, reads={"page": "query"}, writes={"short": "short"})], llm=inner.llm
+    )
     outer = boxed.run("cats")
     assert store.trace(cast("str", outer.run_id)) == outer
     assert rows(store.path, "SELECT node, boxed FROM xmas_records WHERE run_id = ?", outer.run_id) == [

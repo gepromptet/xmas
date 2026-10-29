@@ -2,7 +2,7 @@
 
 An edge can carry a condition. Here the JSON judge of
 [Answers with a shape](answer-forms.md) sends the draft back while it does not fit, then
-publishes it or says sorry. Two more steps do the publishing and the apology:
+publishes it or says sorry. Two more code nodes do the publishing and the apology:
 
 ```python
 from xmas import Edge, EdgeKind
@@ -32,7 +32,7 @@ writer = Agent(
 )
 mas = MAS(
     [writer, judge],
-    steps=[Step("count", uses="count_words"), Step("publish", uses="publish"), Step("sorry", uses="apologize")],
+    code_nodes=[Code("count", uses="count_words"), Code("publish", uses="publish"), Code("sorry", uses="apologize")],
     edges=[
         ("writer", "count"),
         ("count", "judge"),
@@ -64,7 +64,7 @@ colon:
 | `while` | `Edge("a", "b", kind=EdgeKind.WHILE, when="...", max_visits=3)` | `a -> b: {when: ..., max_visits: 3}` | built |
 | `switch` | `Edge("a", "b", kind=EdgeKind.SWITCH, switch="verdict.action")` | `a -> b: {switch: verdict.action}` | built |
 | `on error` | `Edge("a", "b", kind=EdgeKind.ERROR, errors=("timeout",))` | `a -> b: {on error: [timeout]}` | built |
-| box | `Box(name, system, reads=..., writes=...)` | `boxes:` | built |
+| module | `MASModule(name, system, reads=..., writes=...)` | `modules:` | built |
 | `for each` | `MAS(..., each={"b": "page in plan.pages"})` | `for each: page in plan.pages` on each node | built |
 | `first of` | `Edge("a", "b", kind=EdgeKind.FIRST)` | `a -> b: first of` | built |
 
@@ -79,7 +79,7 @@ Its built-ins are `exists(path)`, `len(x)`, `visits`, `visits(node)`, `cost` and
 `elapsed`. `verdict.fits = true` is refused with the position of the stray `=`.
 
 Some things are deliberately not operators. A reduce is any node that reads a list. A
-filter is `for each` plus `when`. A sample is a step. Parallel is the default wherever
+filter is `for each` plus `when`. A sample is a code node. Parallel is the default wherever
 nothing depends on anything else. A goto is what an edge already is.
 
 A node fed by several edges runs once, after all of them have arrived: a join. When its
