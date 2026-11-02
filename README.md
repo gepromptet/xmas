@@ -21,8 +21,7 @@ run leaves a full per-agent trace, so you always know who was naughty and who wa
 See [docs/design-principles.md](docs/design-principles.md) for the principles behind the
 design.
 
-> **Status: beta.** Inference, the optimization loop, CANTANTE and topology search are in
-> place; the experiment layer is still to come.
+> **Status: beta.** We are planning with a full-release in December 2026.
 
 ## 🔧 Installation
 
