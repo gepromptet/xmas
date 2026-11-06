@@ -148,8 +148,8 @@ class AgentRecord:
         finish_reason: Why the model stopped, as the provider said.
         error_kind: The kind of a cut or refused answer that still produced text.
         served_model: The model the provider says served the call.
-        kind: What kind of node ran: ``"agent"``, ``"step"`` for a step,
-            ``"box"`` for a box, or ``"human"`` for a human node, whose
+        kind: What kind of node ran: ``"agent"``, ``"script"`` for a script node,
+            ``"subsystem"`` for a subsystem, or ``"human"`` for a human node, whose
             ``raw_response`` is its answer's JSON.
         rejected: Answers refused by the agent's answer form before the one it
             kept in ``raw_response``, in order.
@@ -158,7 +158,7 @@ class AgentRecord:
             conditional or error edges; ``None`` for a node without.
         capped: Whether a ``while`` edge that held was skipped because its
             target had run ``max_visits`` times.
-        inner: The inner system's trace, for a box.
+        inner: The inner system's trace, for a subsystem.
         item: The index of the item a ``for each`` chain ran this visit for;
             ``None`` outside a chain.
         item_key: The item's key field, for a chain with ``key``.
@@ -282,10 +282,10 @@ class Trace:
         return tuple(record for record in self.records if record.agent == agent)
 
     def walk(self) -> Iterator[tuple[tuple[str, ...], AgentRecord]]:
-        """Yield every record depth first, a box's inner records right after the box's own.
+        """Yield every record depth first, a subsystem's inner records right after the subsystem's own.
 
         Yields:
-            ``(path, record)``, where ``path`` names the boxes enclosing the
+            ``(path, record)``, where ``path`` names the subsystems enclosing the
             record, outermost first; ``()`` for this trace's own records.
         """
         for record in self.records:

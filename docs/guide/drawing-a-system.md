@@ -8,7 +8,7 @@ start and end wiring that xmas adds itself is marked `implicit`:
 ```python
 picture = mas.describe()
 print([(node["name"], node["kind"]) for node in picture["nodes"]])
-# [('writer', 'agent'), ('count', 'step'), ('judge', 'agent'), ('publish', 'step'), ('sorry', 'step')]
+# [('writer', 'agent'), ('count', 'script'), ('judge', 'agent'), ('publish', 'script'), ('sorry', 'script')]
 print([edge["kind"] for edge in picture["edges"] if not edge.get("implicit")])
 # ['plain', 'plain', 'while', 'switch', 'else', 'error']
 mas.agents["judge"].prompt += "\nBe strict."

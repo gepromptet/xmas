@@ -19,11 +19,11 @@ from xmas.errors import BadFormat, BudgetExceeded, ErrorKind, RaceLost, RunStatu
 from xmas.examples import Check, Example
 from xmas.graph import END, START
 from xmas.health import Health, HealthSettings
-from xmas.human import Asker, Human, Pause, Question, ReplayAsker, answer_value
+from xmas.human import Asker, HumanNode, Pause, Question, ReplayAsker, answer_value
 from xmas.llms import APILLM, ScoredSequence
 from xmas.mas import MAS
 from xmas.media import Audio, Capabilities, Document, File, Image, Ref, Table
-from xmas.nodes import Box, Step
+from xmas.nodes import ScriptNode, SubsystemNode
 from xmas.store import Store as RunStore
 from xmas.tasks import GSM8KTask, MASTask
 from xmas.trace import AgentRecord, Event, TokenUsage, ToolCall, Trace
@@ -44,7 +44,6 @@ __all__ = [
     "Asker",
     "Audio",
     "BadFormat",
-    "Box",
     "Budget",
     "BudgetExceeded",
     "CancelFlag",
@@ -62,7 +61,7 @@ __all__ = [
     "GSM8KTask",
     "Health",
     "HealthSettings",
-    "Human",
+    "HumanNode",
     "Image",
     "MASTask",
     "ModelEntry",
@@ -75,8 +74,9 @@ __all__ = [
     "RunStatus",
     "RunStore",
     "ScoredSequence",
-    "Step",
+    "ScriptNode",
     "Stopped",
+    "SubsystemNode",
     "Table",
     "TokenUsage",
     "ToolCall",

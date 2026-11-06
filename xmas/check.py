@@ -3,7 +3,7 @@
 :func:`check_system` asks every question a run would otherwise answer late and
 expensively: does each value a node reads exist before the node runs, is each
 value written once (or by alternatives), does each prompt placeholder name a
-read, do the names and types of steps and boxes fit, do the edges decide on
+read, do the names and types of script nodes and subsystems fit, do the edges decide on
 values that exist, is every node with several incoming edges a merge or a
 join, can each agent's model read and write the kinds the agent does, does each
 human node fit its form and its reads, and is each ``first of`` race sound. It
@@ -37,14 +37,14 @@ from xmas.graph import (
     loop_problems,
     validate_graph,
 )
-from xmas.human import ANSWER_FIELDS, COMMON_FIELDS, Human, template_paths
+from xmas.human import ANSWER_FIELDS, COMMON_FIELDS, HumanNode, template_paths
 from xmas.llms.meta import supports_images, supports_parts
-from xmas.nodes import Box, Step
+from xmas.nodes import ScriptNode, SubsystemNode
 from xmas.predicates import BUILTINS, KEYWORDS, Predicate, PredicateError, parse_predicate
 from xmas.prompts import extract_placeholders
 from xmas.routes import Join, RouteGraph
 from xmas.schemas import compile_form
-from xmas.values import JSON, KINDS, LIST_PREFIX, TEXT, ValueType, fits, media_kind, parse_type
+from xmas.values import JSON, KINDS, LIST_PREFIX, TEXT, ValueType, asset_kind, fits, parse_type
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -64,7 +64,7 @@ __all__ = [
     "SENT",
     "SystemInfo",
     "check_system",
-    "step_maps",
+    "script_maps",
 ]
 
 
@@ -78,7 +78,7 @@ SENT = ("image", "audio")
 """The kinds a model reads as content parts, when it accepts them; a ``file`` it reads as its ref's JSON line."""
 
 CONVERSIONS = {"document": "document_text", "table": "table_rows"}
-"""The built-in :mod:`xmas.convert` step that turns each kind a model never reads into text or rows."""
+"""The built-in :mod:`xmas.convert` script node that turns each kind a model never reads into text or rows."""
 
 CANNOT = {"accepts": ("send content parts", "parts"), "produces": ("answer with images", "image")}
 """What a model object without ``generate_<word>_with_meta`` cannot do, per capability: ``(what, word)``."""
@@ -87,7 +87,7 @@ RESERVED_READS = {"error": JSON, "run": JSON}
 """Values xmas fills and no node writes. ``error``, ``{kind, message, node}`` of
 the failure routed to a node, is readable by a node an ``on error`` edge reaches
 and on that node's edges; ``run``, ``{cost_usd, elapsed_s, calls, records}`` so
-far, is readable anywhere but in a box."""
+far, is readable anywhere but in a subsystem."""
 
 ERRED_ONLY = "which only a node an on error edge reaches can read"
 
@@ -120,8 +120,8 @@ class SystemInfo:
             collapsed into its head.
         flow: The topology of ``edges``, what the engine wires; ``graph``
             when there is no chain.
-        humans: The nodes of the flow that may pause the run: every human
-            node, and each chain head or box whose system holds a human at
+        human_nodes: The nodes of the flow that may pause the run: every human
+            node, and each chain head or subsystem whose system holds a human at
             any depth (a pausing container).
         races: Each ``first of`` race of the flow: its source and its
             contestants, in declared order.
@@ -138,7 +138,7 @@ class SystemInfo:
     chains: dict[str, Chain]
     edges: tuple[Edge, ...]
     flow: nx.DiGraph[str]
-    humans: tuple[str, ...] = ()
+    human_nodes: tuple[str, ...] = ()
     races: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
@@ -151,8 +151,8 @@ class CheckError(ValueError):
         self.problems = problems
 
 
-def step_maps(step: Step, item: Tool) -> tuple[dict[str, str], dict[str, str]]:
-    """Return a step's ``(reads, writes)``, each ``{name inside: name in the graph}``.
+def script_maps(step: ScriptNode, item: Tool) -> tuple[dict[str, str], dict[str, str]]:
+    """Return a script node's ``(reads, writes)``, each ``{name inside: name in the graph}``.
 
     Every parameter of the callable is a read; a parameter not renamed reads the
     value of its own name, and a write not renamed keeps its own name.
@@ -165,7 +165,7 @@ def step_maps(step: Step, item: Tool) -> tuple[dict[str, str], dict[str, str]]:
 def schema_type(item: Tool, parameter: str) -> str:
     """Name a parameter's type for a message: its media type, else its JSON-schema type."""
     vtype = item.reads[parameter]
-    if media_kind(vtype) is not None:
+    if asset_kind(vtype) is not None:
         return str(vtype)
     schema = item.parameters.get("properties", {}).get(parameter, {})
     return str(schema.get("type", "json")) if isinstance(schema, dict) else "json"
@@ -180,19 +180,21 @@ def value_problems(name: str) -> Iterator[str]:
 
 
 def deep(system: MAS, holds: Callable[[MAS], bool], seen: set[int] | None = None) -> bool:
-    """Return whether ``holds`` is true of ``system`` or of the system of a box in it, at any depth."""
+    """Return whether ``holds`` is true of ``system`` or of the system of a subsystem in it, at any depth."""
     if holds(system):
         return True
     seen = set() if seen is None else seen
     if id(system) in seen:
         return False
     seen.add(id(system))
-    return any(deep(box.system, holds, seen) for box in system.boxes.values())
+    return any(deep(box.system, holds, seen) for box in system.subsystem_nodes.values())
 
 
 def pauses(mas: MAS, name: str) -> bool:
-    """Return whether a node is a human, or a box whose system holds one at any depth."""
-    return name in mas.humans or (name in mas.boxes and deep(mas.boxes[name].system, lambda s: bool(s.humans)))
+    """Return whether a node is a human, or a subsystem whose system holds one at any depth."""
+    return name in mas.human_nodes or (
+        name in mas.subsystem_nodes and deep(mas.subsystem_nodes[name].system, lambda s: bool(s.human_nodes))
+    )
 
 
 def pairs(edges: Sequence[Edge], kind: EdgeKind) -> list[tuple[str, str]]:
@@ -278,18 +280,19 @@ def switch_case_problems(edges: tuple[Edge, ...]) -> Iterator[str]:
 
 
 NodeReads = dict[str, tuple[str, ValueType, str] | None]
-"""Each value one node reads: ``(name inside, type, type word)`` for a step or a box, ``None`` for an agent or a
+"""Each value one node reads: ``(name inside, type, type word)`` for a script node or a subsystem, ``None`` for an
+agent or a
 human."""
 Reads = dict[str, NodeReads]
 """Per node, each value it reads (:data:`NodeReads`)."""
 Writes = dict[str, dict[str, ValueType]]
-Node = Agent | Step | Box | Human
+Node = Agent | ScriptNode | SubsystemNode | HumanNode
 
 
 def node_io(mas: MAS, nodes: dict[str, Node]) -> tuple[Reads, Writes, dict[str, list[str]]]:
-    """Return what each node reads and writes, and per node the problems of its tools, prompt, callable or box.
+    """Return what each node reads and writes, and per node the problems of its tools, prompt, callable or subsystem.
 
-    A human's own problems (:meth:`~xmas.human.Human.problems`) are its node's
+    A human's own problems (:meth:`~xmas.human.HumanNode.problems`) are its node's
     problems too.
     """
     problems: dict[str, list[str]] = {}
@@ -298,7 +301,7 @@ def node_io(mas: MAS, nodes: dict[str, Node]) -> tuple[Reads, Writes, dict[str, 
     for name, node in nodes.items():
         reads[name], writes[name], problems[name] = io_of(mas, name, node)
     for name, node in nodes.items():
-        if isinstance(node, Human) and "value" in node.writes and node.edits in node.reads:
+        if isinstance(node, HumanNode) and "value" in node.writes and node.edits in node.reads:
             writes[name][node.writes["value"]] = edited_type(mas, name, node.reads[node.edits], writes)
     return reads, writes, problems
 
@@ -311,11 +314,11 @@ def io_of(mas: MAS, name: str, node: Node) -> NodeIO:
     """Return what one node reads and writes and its problems, by the kind of node."""
     if isinstance(node, Agent):
         return agent_io(mas, name, node)
-    if isinstance(node, Human):
+    if isinstance(node, HumanNode):
         return human_io(name, node)
-    if isinstance(node, Box):
-        return box_io(mas, name, node)
-    return step_io(mas, name, node)
+    if isinstance(node, SubsystemNode):
+        return subsystem_io(mas, name, node)
+    return script_io(mas, name, node)
 
 
 def agent_io(mas: MAS, name: str, agent: Agent) -> NodeIO:
@@ -333,7 +336,7 @@ def agent_io(mas: MAS, name: str, agent: Agent) -> NodeIO:
     return reads, {agent.output: parse_type(agent.output_type)}, problems
 
 
-def human_io(name: str, human: Human) -> NodeIO:
+def human_io(name: str, human: HumanNode) -> NodeIO:
     """Return a human's reads (never a reserved one) and its answer, with the human's own problems."""
     reserved = [value for value in human.reads.values() if value in RESERVED_READS]
     problems = [
@@ -347,10 +350,10 @@ def human_io(name: str, human: Human) -> NodeIO:
     return reads, {human.answer: JSON}, problems
 
 
-def box_io(mas: MAS, name: str, box: Box) -> NodeIO:
-    """Return a box's typed reads and its writes; nothing, with a problem, for a box that holds its own system."""
+def subsystem_io(mas: MAS, name: str, box: SubsystemNode) -> NodeIO:
+    """Return a subsystem's typed reads and its writes; nothing, with a problem, when it holds its own system."""
     if deep(box.system, lambda system: system is mas):
-        return {}, {}, [f"box {name!r} contains the system it sits in"]
+        return {}, {}, [f"subsystem {name!r} contains the system it sits in"]
     outer_reads, writes = box.types()
     reads: NodeReads = {
         outer: (inner, outer_reads[outer], str(outer_reads[outer])) for inner, outer in box.reads.items()
@@ -358,22 +361,23 @@ def box_io(mas: MAS, name: str, box: Box) -> NodeIO:
     return reads, writes, []
 
 
-def step_io(mas: MAS, name: str, step: Step) -> NodeIO:
-    """Return a step's typed reads and writes, renamed; nothing, with a problem, when its callable does not resolve."""
+def script_io(mas: MAS, name: str, step: ScriptNode) -> NodeIO:
+    """Return a script node's typed reads and writes, renamed; nothing, with a problem, when its callable is unknown."""
     try:
         item, _ = mas.resolve_callable(step)
     except ValueError as exc:
         return {}, {}, [str(exc)]
     parameters, produced = item.reads, item.writes
     problems = [
-        f"step {name!r}: {label} renames {inside!r}, which is not {what} of {step.uses!r} (it has {sorted(known)})"
+        f"script node {name!r}: {label} renames {inside!r}, "
+        f"which is not {what} of {step.uses!r} (it has {sorted(known)})"
         for label, what, renames, known in (
             ("reads", "a parameter", step.reads, parameters),
             ("writes", "a write", step.writes, produced),
         )
         for inside in sorted(set(renames) - set(known))
     ]
-    inner_reads, inner_writes = step_maps(step, item)
+    inner_reads, inner_writes = script_maps(step, item)
     reads: NodeReads = {
         outer: (inner, parameters[inner], schema_type(item, inner)) for inner, outer in inner_reads.items()
     }
@@ -473,13 +477,16 @@ class FlowFacts:
 
 
 def read_problems(mas: MAS, reads: Reads, facts: FlowFacts) -> Iterator[str]:
-    """Say which reads have no writer that runs first, or have the wrong type for a step or a box."""
+    """Say which reads have no writer that runs first, or have the wrong type for a script node or a subsystem."""
     for name, needed in reads.items():
         failed = facts.routes.failed_before(name)
         for value, parameter in needed.items():
-            if (box := name in mas.boxes and value in RESERVED_READS) or (value == "error" and name not in facts.erred):
+            if (box := name in mas.subsystem_nodes and value in RESERVED_READS) or (
+                value == "error" and name not in facts.erred
+            ):
                 yield (
-                    f"box {name!r} reads {value!r}; a box reads neither 'error' nor 'run', the system inside it does"
+                    f"subsystem {name!r} reads {value!r}; "
+                    "a subsystem reads neither 'error' nor 'run', the system inside it does"
                     if box
                     else f"{name!r} reads 'error', {ERRED_ONLY}"
                 )
@@ -498,14 +505,14 @@ def read_problems(mas: MAS, reads: Reads, facts: FlowFacts) -> Iterator[str]:
 
 
 def type_mismatch(mas: MAS, name: str, value: str, vtype: ValueType, parameter: tuple[str, ValueType, str]) -> str:
-    """Say that a box or a step passes ``value`` of type ``vtype`` to an input or parameter of another type."""
+    """Say that a subsystem or a script node passes ``value`` of type ``vtype`` to an input or parameter of another."""
     inside, wanted, word = parameter
-    if name in mas.boxes:
-        return f"box {name!r} passes {vtype} {value!r} to its {word} input {inside!r}"
-    kind = media_kind(vtype) or media_kind(wanted)
+    if name in mas.subsystem_nodes:
+        return f"subsystem {name!r} passes {vtype} {value!r} to its {word} input {inside!r}"
+    kind = asset_kind(vtype) or asset_kind(wanted)
     media = "" if kind is None else f", {kind} into {a(kind)} parameter (xmas.media.{kind.title()}) or a file"
     return (
-        f"step {name!r} passes {vtype} {value!r} to parameter {inside!r} ({word}); "
+        f"script node {name!r} passes {vtype} {value!r} to parameter {inside!r} ({word}); "
         f"text goes into a string parameter only{media}, json into any other"
     )
 
@@ -536,11 +543,11 @@ def model_called(model: str | None) -> str:
 def node_problems(
     mas: MAS, nodes: dict[str, Node], types: Mapping[str, ValueType], edges: Sequence[Edge], members: set[str]
 ) -> Iterator[str]:
-    """Say what is wrong with the media agents and steps handle and with the forms of human nodes.
+    """Say what is wrong with the media agents and script nodes handle and with the forms of human nodes.
 
     A model reads an image or audio as a content part, so it must accept the
     kind and be able to send parts; it never reads a document or a table,
-    which a conversion step turns into text first. An agent writing an image
+    which a conversion script node turns into text first. An agent writing an image
     needs a model that produces one, and no tools. A remote tool reads no
     media. A chain's members are its own check's question.
     """
@@ -552,9 +559,9 @@ def node_problems(
             continue
         if isinstance(node, Agent):
             yield from agent_problems(mas, name, node, types, cannot)
-        elif isinstance(node, Step):
-            yield from step_problems(mas, name, node, types)
-        elif isinstance(node, Human) and node.form in ANSWER_FIELDS:
+        elif isinstance(node, ScriptNode):
+            yield from script_problems(mas, name, node, types)
+        elif isinstance(node, HumanNode) and node.form in ANSWER_FIELDS:
             yield from human_problems(name, node, types, edges)
     for (called, attr), kinds in cannot.items():
         what, word = CANNOT[attr]
@@ -573,18 +580,18 @@ def agent_problems(
     called = model_called(model)
     llm = mas.llms.get(agent.model) if agent.model is not None else mas.llm
     for value in agent.inputs:
-        kind = media_kind(types[value]) if value in types else None
+        kind = asset_kind(types[value]) if value in types else None
         if kind in CONVERSIONS:
             yield (
-                f"agent {name!r} reads {kind} {value!r}; a model reads {a(kind)} through a conversion step, "
+                f"agent {name!r} reads {kind} {value!r}; a model reads {a(kind)} through a conversion script node, "
                 f"such as one using xmas.convert.{CONVERSIONS[kind]}"
             )
         elif kind in SENT and not capabilities.takes(kind):
             subject = f"agent {name!r} reads {kind} {value!r}"
-            yield lacking(subject, kind, "accepts", capabilities, model) + " or convert it first with a step"
+            yield lacking(subject, kind, "accepts", capabilities, model) + " or convert it first with a script node"
         elif kind in SENT and llm is not None and not supports_parts(llm):
             cannot.setdefault((called, "accepts"), set()).add(kind)
-    written = media_kind(parse_type(agent.output_type))
+    written = asset_kind(parse_type(agent.output_type))
     if written is None:
         return
     if written != "image":
@@ -597,19 +604,22 @@ def agent_problems(
         cannot.setdefault((called, "produces"), set()).add("image")
 
 
-def step_problems(mas: MAS, name: str, step: Step, types: Mapping[str, ValueType]) -> Iterator[str]:
-    """Say which media values a step passes to a remote tool, which reads text and json only."""
+def script_problems(mas: MAS, name: str, step: ScriptNode, types: Mapping[str, ValueType]) -> Iterator[str]:
+    """Say which media values a script node passes to a remote tool, which reads text and json only."""
     try:
         item, _ = mas.resolve_callable(step)
     except ValueError:  # named by the node's own problems
         return
-    for value in step_maps(step, item)[0].values() if item.fn is None else ():
-        kind = media_kind(types[value]) if value in types else None
+    for value in script_maps(step, item)[0].values() if item.fn is None else ():
+        kind = asset_kind(types[value]) if value in types else None
         if kind is not None:
-            yield f"step {name!r} passes {kind} {value!r} to remote tool {step.uses!r}; remote tools read no media"
+            yield (
+                f"script node {name!r} passes {kind} {value!r} to remote tool {step.uses!r}; "
+                "remote tools read no assets"
+            )
 
 
-def human_problems(name: str, human: Human, types: Mapping[str, ValueType], edges: Sequence[Edge]) -> Iterator[str]:
+def human_problems(name: str, human: HumanNode, types: Mapping[str, ValueType], edges: Sequence[Edge]) -> Iterator[str]:
     """Say which placeholders of a human node read fields of text, its options' wrong type, or a timeout's gap."""
     typed = {placeholder: types.get(value) for placeholder, value in human.reads.items()}
     paths = {path for text in human.templates() for path in template_paths(text) if len(path) > 1}
@@ -661,7 +671,7 @@ def path_problems(mas: MAS, edge: Edge, path: tuple[str, ...], facts: FlowFacts)
 
 def human_field_problems(mas: MAS, where: str, writer: str, path: tuple[str, ...]) -> Iterator[str]:
     """Say when a predicate reads a field a human writer's answer does not have."""
-    human = mas.humans.get(writer)
+    human = mas.human_nodes.get(writer)
     if human is None or path[0] != human.answer:
         return
     known = (*ANSWER_FIELDS.get(human.form, ()), *COMMON_FIELDS)
@@ -730,14 +740,14 @@ def setting_problems(mas: MAS, nodes: dict[str, Node], members: set[str]) -> Ite
 
 
 def retry_problems(mas: MAS, nodes: dict[str, Node], members: set[str]) -> Iterator[str]:
-    """Say which ``retry`` settings name no node, a box or a human, or give a wrong kind or count."""
+    """Say which ``retry`` settings name no node, a subsystem or a human, or give a wrong kind or count."""
     for name, rules in mas.retry.items():
         node = nodes.get(name)
         if node is None:
             yield f"retry names {name!r}, which is no node"
-        elif isinstance(node, Box):
-            yield f"box {name!r} takes no retry; retry inside its system"
-        elif isinstance(node, Human):
+        elif isinstance(node, SubsystemNode):
+            yield f"subsystem {name!r} takes no retry; retry inside its system"
+        elif isinstance(node, HumanNode):
             yield f"human {name!r} takes no retry; a person answers once"
         elif name not in members:
             yield from retry_rule_problems(name, rules)
@@ -803,13 +813,13 @@ def contestant_problems(
     after: dict[str, str] = {}
     problems: list[str] = []
     for name in contestants:
-        kind = "a chain head" if name in heads else "a human node" if name in mas.humans else None
+        kind = "a chain head" if name in heads else "a human node" if name in mas.human_nodes else None
         kind = "the end" if name == END else kind
         out = [e for e in edges if e.source == name and e.kind is not EdgeKind.WHILE]
         if kind is not None:
-            problems.append(f"{where}: {name!r} is {kind}; agents, steps and boxes race")
+            problems.append(f"{where}: {name!r} is {kind}; agents, script nodes and subsystems race")
         elif pauses(mas, name):
-            problems.append(f"{where}: box {name!r} holds a human node; a contestant never waits for a person")
+            problems.append(f"{where}: subsystem {name!r} holds a human node; a contestant never waits for a person")
         if any(e.kind is EdgeKind.ERROR for e in out):
             problems.append(f"{where}: {name!r} has an on error edge; a contestant's failure is the race's")
         elif len(out) > 1 or any(e.kind is not EdgeKind.PLAIN for e in out):
@@ -867,9 +877,9 @@ def check_chains(
             if other not in shape.nodes and value in writes[other]
         ]
         found += [
-            f"box {name!r} holds a for each chain; chains do not nest"
+            f"subsystem {name!r} holds a for each chain; chains do not nest"
             for name in shape.nodes
-            if isinstance(box := nodes[name], Box) and deep(box.system, lambda system: bool(system.each))
+            if isinstance(box := nodes[name], SubsystemNode) and deep(box.system, lambda system: bool(system.each))
         ]
         if not shape.exits and not mas.outputs:
             found.append("it feeds the end, which needs declared outputs")
@@ -894,7 +904,7 @@ def check_system(mas: MAS) -> SystemInfo:
     Raises:
         ValueError: Listing every problem found, one per line.
     """
-    nodes: dict[str, Node] = {**mas.agents, **mas.steps, **mas.boxes, **mas.humans}
+    nodes: dict[str, Node] = {**mas.agents, **mas.script_nodes, **mas.subsystem_nodes, **mas.human_nodes}
     problems = name_problems(mas, nodes)
     reads, writes, io_problems = node_io(mas, nodes)
     shapes, shape_problems = find_chains(list(nodes), mas.edges, {n: f for n, f in mas.each.items() if n in nodes})
@@ -943,9 +953,8 @@ def check_system(mas: MAS) -> SystemInfo:
 
 
 def name_problems(mas: MAS, nodes: dict[str, Node]) -> list[str]:
-    """Say which node and input names are not allowed, and which frozen names name no node."""
+    """Say which node and input names are not allowed."""
     problems = [f"node {name!r}: names starting with '__' belong to xmas" for name in nodes if name.startswith("__")]
-    problems += [f"frozen names {name!r}, which is no node" for name in sorted(mas.frozen - set(nodes))]
     for name in mas.inputs:
         problems += [f"input {name!r} {problem}" for problem in value_problems(name)]
     return problems
@@ -991,7 +1000,7 @@ def reserved_reads_used(flow_reads: Reads, predicates: dict[Edge, Predicate]) ->
 
 
 def pausing_nodes(mas: MAS, flow_nodes: list[str], heads: dict[str, ChainShape]) -> tuple[str, ...]:
-    """Return the nodes of the flow that may pause the run: a human, or a chain head or box that holds one."""
+    """Return the nodes of the flow that may pause the run: a human, or a chain head or subsystem that holds one."""
     return tuple(
         name
         for name in flow_nodes

@@ -40,6 +40,8 @@ class Agent:
             ``"json"``.
         schema: The answer form a json answer must match, in the dialect of
             :mod:`xmas.schemas`, or ``None`` for any JSON.
+        frozen: Whether the node is frozen: no optimizer changes its prompt, model, wiring or edges.
+            A frozen agent makes the system version 2.
     """
 
     name: str
@@ -50,6 +52,7 @@ class Agent:
     model: str | None
     output_type: str
     schema: dict[str, Any] | None
+    frozen: bool
 
     def __init__(  # noqa: PLR0913, PLR0917  the public constructor, kept for version 1 callers
         self,
@@ -61,6 +64,8 @@ class Agent:
         model: str | None = None,
         output_type: str = "text",
         schema: dict[str, Any] | None = None,
+        *,
+        frozen: bool = False,
     ) -> None:
         """Initialize an agent; the fields are described on the class."""
         if not name:
@@ -85,6 +90,7 @@ class Agent:
         self.model = model
         self.output_type = output_type
         self.schema = schema
+        self.frozen = frozen
 
     @property
     def inputs(self) -> list[str]:
@@ -105,8 +111,8 @@ class Agent:
 
         ``inputs`` is a list of value names, or the ``{placeholder: value}``
         map when a placeholder reads a value of another name. ``output_type``
-        and ``schema`` appear only when set, so a version 1 agent's dict keeps
-        its six keys.
+        ``schema`` and ``frozen`` appear only when set, so a version 1 agent's
+        dict keeps its six keys.
         """
         data: dict[str, Any] = {
             "name": self.name,
@@ -120,12 +126,24 @@ class Agent:
             data["output_type"] = self.output_type
         if self.schema is not None:
             data["schema"] = copy.deepcopy(self.schema)
+        if self.frozen:
+            data["frozen"] = True
         return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Agent:
         """Rebuild an agent from :meth:`to_dict` output, refusing unknown or missing keys and wrong types."""
-        unknown = set(data) - {"name", "prompt", "inputs", "output", "tools", "model", "output_type", "schema"}
+        unknown = set(data) - {
+            "name",
+            "prompt",
+            "inputs",
+            "output",
+            "tools",
+            "model",
+            "output_type",
+            "schema",
+            "frozen",
+        }
         if unknown:
             raise ValueError(f"Unknown agent keys: {sorted(unknown)}.")
         missing = {"name", "prompt", "output"} - set(data)
@@ -145,6 +163,8 @@ class Agent:
         schema = data.get("schema")
         if schema is not None and not isinstance(schema, dict):
             raise ValueError(f"Agent {data['name']!r} needs 'schema' to be a mapping or null.")
+        if not isinstance(data.get("frozen", False), bool):
+            raise ValueError(f"Agent {data['name']!r} needs 'frozen' to be true or false.")
         return cls(
             name=data["name"],
             prompt=data["prompt"],
@@ -154,6 +174,7 @@ class Agent:
             model=data.get("model"),
             output_type=data.get("output_type", "text"),
             schema=data.get("schema"),
+            frozen=data.get("frozen", False),
         )
 
     def copy(self, **overrides: Any) -> Agent:
@@ -167,6 +188,7 @@ class Agent:
             "model": self.model,
             "output_type": self.output_type,
             "schema": copy.deepcopy(self.schema),
+            "frozen": self.frozen,
         }
         unknown = set(overrides) - set(fields)
         if unknown:

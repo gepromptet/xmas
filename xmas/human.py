@@ -1,4 +1,4 @@
-"""People in the graph: a :class:`Human` node puts a question to a person and writes the answer.
+"""People in the graph: a :class:`HumanNode` node puts a question to a person and writes the answer.
 
 A human node has one of four forms (:data:`FORMS`), and its answer is one json
 value with the fields of its form (:data:`ANSWER_FIELDS`) plus who answered and
@@ -39,7 +39,7 @@ __all__ = [
     "FORMS",
     "TIE",
     "Asker",
-    "Human",
+    "HumanNode",
     "Pause",
     "Question",
     "ReplayAsker",
@@ -63,7 +63,7 @@ FORMS = tuple(ANSWER_FIELDS)
 
 EDITED = "value"
 """The key of an edit's edited value in what a host gives and in :func:`answer_value`'s
-result; :meth:`Human.state_writes` writes it under ``writes["value"]``, not in the answer."""
+result; :meth:`HumanNode.state_writes` writes it under ``writes["value"]``, not in the answer."""
 
 COMMON_FIELDS = ("who", "asked_at", "answered_at", "comment", "timed_out")
 """The fields every answer holds: who answered (``None`` for a default taken on
@@ -152,7 +152,7 @@ def question_id(run_id: str, node: str, visit: int, item: int | None = None, ite
 
 
 @dataclass(frozen=True, init=False)
-class Human:
+class HumanNode:
     """A node that asks a person and writes the answer.
 
     Attributes:
@@ -174,6 +174,7 @@ class Human:
             waits. ``None`` waits until answered.
         default: The answer taken when the deadline passes, as a partial
             answer such as ``{"approved": False}``.
+        frozen: Whether the node is frozen: no optimizer changes its prompt, model, wiring or edges.
 
     Construction checks the shape of each setting; whether the settings fit the
     form and the reads is :meth:`problems`' question, asked by
@@ -191,6 +192,7 @@ class Human:
     edits: str | None
     timeout_s: float | None
     default: dict[str, Any] | None
+    frozen: bool
 
     def __init__(  # noqa: PLR0913  the public signature: one keyword per setting, as a spec writes them
         self,
@@ -206,11 +208,14 @@ class Human:
         edits: str | None = None,
         timeout_s: float | None = None,
         default: Mapping[str, Any] | None = None,
+        frozen: bool = False,
     ) -> None:
         """Refuse a setting of the wrong shape and keep plain copies; the fields are described on the class."""
-        where = f"Human {name!r}"
+        where = f"HumanNode {name!r}"
         if not is_text(name) or not is_text(form) or not isinstance(question, str):
             raise ValueError(f"{where}: a human node needs a name, a form and a text question.")
+        if not isinstance(frozen, bool):
+            raise ValueError(f"{where}: frozen must be true or false, got {frozen!r}.")
         given: dict[str, Any] = {
             "name": name,
             "form": form,
@@ -223,6 +228,7 @@ class Human:
             "default": plain_mapping(where, "default", default),
             "edits": checked_edits(where, edits),
             "timeout_s": checked_timeout(where, timeout_s),
+            "frozen": frozen,
         }
         for key, value in given.items():
             object.__setattr__(self, key, value)
@@ -398,10 +404,12 @@ class Human:
             "default": None if self.default is None else dict(self.default),
         }
         data.update((key, value) for key, value in given.items() if value is not None)
+        if self.frozen:
+            data["frozen"] = True
         return data
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> Human:
+    def from_dict(cls, data: Mapping[str, Any]) -> HumanNode:
         """Read a spec entry; ``for each`` is the MAS's, so it is skipped here."""
         settings = {key: value for key, value in data.items() if key not in ("name", "form", "reads", "for each")}
         return cls(data["name"], data["form"], data.get("reads", ()), **settings)
@@ -559,7 +567,7 @@ class ReplayAsker:
     """
 
     def __init__(self, traces: Trace | Iterable[Trace]) -> None:
-        """Index the human records of ``traces``, boxes' inner records included."""
+        """Index the human records of ``traces``, subsystems' inner records included."""
         self.answers: dict[tuple[str, str | int | None, int | None], dict[str, Any]] = {}
         for trace in [traces] if isinstance(traces, Trace) else traces:
             for _, record in trace.walk():

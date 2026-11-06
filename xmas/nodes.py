@@ -1,6 +1,6 @@
-"""Nodes that are not agents: a :class:`Step` runs a callable, a :class:`Box` a whole system.
+"""Nodes that are not agents: a :class:`ScriptNode` runs a callable, a :class:`SubsystemNode` a whole system.
 
-Steps live in ``MAS.steps`` and boxes in ``MAS.boxes``, never in ``MAS.agents``,
+Script nodes live in ``MAS.script_nodes`` and subsystems in ``MAS.subsystem_nodes``, never in ``MAS.agents``,
 so prompts, encodings and prompt optimizers see agents only. Their maps rename
 between the inside and the graph: every map is ``{name inside: name in the
 graph}``.
@@ -17,14 +17,14 @@ if TYPE_CHECKING:  # pragma: no cover
     from xmas.values import ValueType
 
 __all__ = [
-    "Box",
-    "Step",
+    "ScriptNode",
+    "SubsystemNode",
 ]
 
 
 @dataclass(frozen=True)
-class Step:
-    """A node that runs a registered callable (a tool or a step function) without a model.
+class ScriptNode:
+    """A node that runs a registered callable (a tool or a script node function) without a model.
 
     Attributes:
         name: Unique node name in the MAS.
@@ -33,29 +33,33 @@ class Step:
             another name; a parameter not listed reads the value of its own name.
         writes: ``{callable write: value in the graph}`` for writes stored under
             another name; a write not listed keeps its own name.
+        frozen: Whether the node is frozen: no optimizer changes its prompt, model, wiring or edges.
     """
 
     name: str
     uses: str
     reads: Mapping[str, str] = field(default_factory=dict)
     writes: Mapping[str, str] = field(default_factory=dict)
+    frozen: bool = False
 
     def __post_init__(self) -> None:
         """Check the names and keep plain copies of the maps."""
         if not self.name:
-            raise ValueError("A step needs a name.")
+            raise ValueError("A script node needs a name.")
         if not self.uses:
-            raise ValueError(f"Step {self.name!r} needs the name of the callable it uses.")
+            raise ValueError(f"ScriptNode {self.name!r} needs the name of the callable it uses.")
         for label in ("reads", "writes"):
-            object.__setattr__(self, label, names_map(f"Step {self.name!r}", label, getattr(self, label)))
+            object.__setattr__(self, label, names_map(f"ScriptNode {self.name!r}", label, getattr(self, label)))
 
     def to_dict(self) -> dict[str, Any]:
-        """Return the plain-data form; ``reads`` and ``writes`` only when not empty."""
+        """Return the plain-data form; ``reads``, ``writes`` and ``frozen`` only when set."""
         data: dict[str, Any] = {"name": self.name, "uses": self.uses}
         if self.reads:
             data["reads"] = dict(self.reads)
         if self.writes:
             data["writes"] = dict(self.writes)
+        if self.frozen:
+            data["frozen"] = True
         return data
 
 
@@ -69,7 +73,7 @@ def names_map(owner: str, label: str, mapping: Any) -> dict[str, str]:
 
 
 @dataclass(frozen=True)
-class Box:
+class SubsystemNode:
     """A node that runs a whole version 2 system on values of the outer one.
 
     The inner system starts from the mapped values, runs on the outer run's
@@ -78,24 +82,26 @@ class Box:
 
     Attributes:
         name: Unique node name in the outer MAS.
-        system: The inner version 2 system; it may hold boxes itself.
+        system: The inner version 2 system; it may hold subsystems itself.
         reads: ``{inner input: outer value}``, one entry for every input the
             inner system declares.
         writes: ``{inner value: outer value}`` for the inner writes the outer
             system keeps; at least one.
+        frozen: Whether the node is frozen: no optimizer changes its prompt, model, wiring or edges.
     """
 
     name: str
     system: MAS
     reads: Mapping[str, str]
     writes: Mapping[str, str]
+    frozen: bool = False
 
     def __post_init__(self) -> None:
         """Check the maps against the inner system and keep plain copies of them."""
         if not self.name:
-            raise ValueError("A box needs a name.")
-        where = f"Box {self.name!r}"
-        info = self.system.checked(f"{where}: the system in a box must be version 2.")
+            raise ValueError("A subsystem needs a name.")
+        where = f"SubsystemNode {self.name!r}"
+        info = self.system.checked(f"{where}: the system in a subsystem must be version 2.")
         reads = names_map(where, "reads", self.reads)
         writes = names_map(where, "writes", self.writes)
         inputs = sorted(self.system.inputs)
@@ -115,9 +121,12 @@ class Box:
 
     def to_dict(self) -> dict[str, Any]:
         """Return the plain-data form, the inner system as its own version 2 spec."""
-        return {
+        data: dict[str, Any] = {
             "name": self.name,
             "reads": dict(self.reads),
             "writes": dict(self.writes),
             "system": dict(self.system.to_dict()),
         }
+        if self.frozen:
+            data["frozen"] = True
+        return data

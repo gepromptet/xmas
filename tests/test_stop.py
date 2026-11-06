@@ -26,10 +26,10 @@ from xmas.budget import RUNNING, SLICE_S, RunMeter, cancel_flag, contestant
 from xmas.edges import Edge, EdgeKind
 from xmas.errors import BudgetExceeded, ErrorKind, RaceLost, RunStatus, Stopped, classify
 from xmas.graph import END
-from xmas.human import Human, Question
+from xmas.human import HumanNode, Question
 from xmas.llms.api_llm import APILLM, assemble
 from xmas.llms.meta import CallMeta, TokenPrice
-from xmas.nodes import Box, Step
+from xmas.nodes import ScriptNode, SubsystemNode
 from xmas.runtime import BATCH_QUERIES
 from xmas.tools import ToolCallRequest, tool
 from xmas.trace import Event
@@ -69,7 +69,7 @@ class PollingLLM(MockLLM):
 
 
 def stop_system(model: PollingLLM) -> MAS:
-    """A planner, then 8 items four at once beside a side agent with an error edge and a box; the planner is quick."""
+    """A quick planner, then 8 items four at once beside a side agent with an error edge and a subsystem."""
     inner = MAS([Agent("inner", "Inner {pages}", "short", ["pages"])], inputs={"pages": "list of text"}, llm=model)
     return MAS(
         [
@@ -79,7 +79,7 @@ def stop_system(model: PollingLLM) -> MAS:
             Agent("fallback", "Fallback {pages}", "apology", ["pages"]),
         ],
         [("planner", "noter"), ("planner", "boxed"), Edge("noter", "fallback", EdgeKind.ERROR, errors=("any",))],
-        boxes=[Box("boxed", inner, reads={"pages": "pages"}, writes={"short": "short"})],
+        subsystem_nodes=[SubsystemNode("boxed", inner, reads={"pages": "pages"}, writes={"short": "short"})],
         each={"drafter": {"item": "page", "in": "pages", "at once": 4}},
         inputs={"pages": "list of text"},
         outputs={"draft": "list of text", "note": "text", "apology": "text", "short": "text"},
@@ -105,7 +105,7 @@ def test_stop_ends_a_run_within_a_second() -> None:
     pressed: list[float] = []
 
     def press() -> None:
-        model.started(7)  # the planner, four items, the side agent and the box's agent
+        model.started(7)  # the planner, four items, the side agent and the subsystem's agent
         (meter,) = [meter for meter in list(RUNNING.values()) if meter.owner is mas]
         pressed.append(time.monotonic())
         meter.stop("Tom pressed Stop")
@@ -119,7 +119,7 @@ def test_stop_ends_a_run_within_a_second() -> None:
     assert returned - pressed[0] < 1.0  # mostly under 0.01 s; one in ten took 0.2 s on two busy cores
     assert (trace.status, trace.error_kind) == (RunStatus.STOPPED, ErrorKind.STOPPED)
     assert trace.error == "Stopped: Tom pressed Stop"
-    # the queued items never started, the box's inner run stopped too, and no error edge routed the stop
+    # the queued items never started, the subsystem's inner run stopped too, and no error edge routed the stop
     assert sorted(model.calls) == [
         "Draft a",
         "Draft b",
@@ -485,11 +485,11 @@ class Withdrawing:
 
 def test_stop_a_paused_run() -> None:
     asker = Withdrawing()
-    gate = Human("approve", "approve", ["draft"], "approval", question="Ship {draft}?")
+    gate = HumanNode("approve", "approve", ["draft"], "approval", question="Ship {draft}?")
     mas = MAS(
         [Agent("writer", "Write {query}", "draft")],
         [("writer", "approve")],
-        humans=[gate],
+        human_nodes=[gate],
         llm=MockLLM(lambda prompt: "a draft"),
         asker=asker,
     )
@@ -507,7 +507,7 @@ def test_stop_a_paused_run() -> None:
     with pytest.raises(ValueError, match="is stopped: it takes no answers"):
         mas.answer("turn-2", approved)
     assert mas.stop("turn-2") is False
-    with pytest.raises(ValueError, match="holds a '/'"):  # it would share the threads of turn-2's items and boxes
+    with pytest.raises(ValueError, match="holds a '/'"):  # it would share the threads of turn-2's items and subsystems
         mas.run_state({"query": "q"}, run_id="turn-2/approve")
 
 
@@ -525,26 +525,32 @@ class Asking(Withdrawing):
 
 
 def test_a_stop_while_running_ends_the_run_even_at_a_pause() -> None:
-    def gated(model: MockLLM, asker: Asking, *, steps: tuple[Step, ...] = (), after: str = "") -> MAS:
-        side = [] if steps else [Agent("pre", "Pre {query}", "pre"), Agent("noter", "Note {pre}", "notes", ["pre"])]
+    def gated(model: MockLLM, asker: Asking, *, script_nodes: tuple[ScriptNode, ...] = (), after: str = "") -> MAS:
+        side = (
+            [] if script_nodes else [Agent("pre", "Pre {query}", "pre"), Agent("noter", "Note {pre}", "notes", ["pre"])]
+        )
         side += [Agent("pre", "Pre {query}", "pre")] if after else []
         return MAS(
             [Agent("writer", "Write {query}", "draft"), *side],
-            [("writer", "approve"), *([] if steps else [("pre", "noter")]), *([("pre", after)] if after else [])],
-            steps=list(steps),
-            humans=[Human("approve", "approve", ["draft"], "approval")],
+            [
+                ("writer", "approve"),
+                *([] if script_nodes else [("pre", "noter")]),
+                *([("pre", after)] if after else []),
+            ],
+            script_nodes=list(script_nodes),
+            human_nodes=[HumanNode("approve", "approve", ["draft"], "approval")],
             tools=[slow],
-            outputs={"approval": "json", ("thought" if steps else "notes"): "text"},
+            outputs={"approval": "json", ("thought" if script_nodes else "notes"): "text"},
             llm=model,
             asker=asker,
         )
 
-    # a stop during a step beside the human: no question is put after it, and the run ends stopped
+    # a stop during a script node beside the human: no question is put after it, and the run ends stopped
     asker = Asking()
     mas = gated(
         MockLLM(lambda prompt: "a draft"),
         asker,
-        steps=(Step("think", "slow", reads={"outline": "query"}, writes={"slow": "thought"}),),
+        script_nodes=(ScriptNode("think", "slow", reads={"outline": "query"}, writes={"slow": "thought"}),),
     )
     events: list[Event] = []
     threading.Timer(0.1, mas.stop, args=("turn-3", "Tom pressed Stop")).start()
@@ -568,10 +574,10 @@ def test_a_stop_while_running_ends_the_run_even_at_a_pause() -> None:
     assert asker.asked == ["turn-4/approve/1"]
     assert asker.withdrawn == [("turn-4/approve/1", "Tom pressed Stop")]
 
-    # a stop during a step that runs after the question was put: the pause it reaches ends stopped
+    # a stop during a script node that runs after the question was put: the pause it reaches ends stopped
     asker = Asking()
-    think = Step("think", "slow", reads={"outline": "pre"}, writes={"slow": "thought"})
-    mas = gated(MockLLM(lambda prompt: "a draft"), asker, steps=(think,), after="think")
+    think = ScriptNode("think", "slow", reads={"outline": "pre"}, writes={"slow": "thought"})
+    mas = gated(MockLLM(lambda prompt: "a draft"), asker, script_nodes=(think,), after="think")
     threading.Timer(0.1, mas.stop, args=("turn-5", "Tom pressed Stop")).start()
     trace = mas.run_state({"query": "q"}, run_id="turn-5")
     assert (trace.status, trace.pause, asker.asked) == ("stopped", None, ["turn-5/approve/1"])
@@ -645,7 +651,7 @@ SECONDS = {"Outline": 0.0, "Side": 0.0, "Draft": 0.0, "Quick": 0.05, "Careful": 
 """How long the racing system's model thinks per prompt, by its first word."""
 
 
-def racing(model: MockLLM, *, careful: Step | None = None) -> MAS:
+def racing(model: MockLLM, *, careful: ScriptNode | None = None) -> MAS:
     """``quick`` and ``careful`` race from ``outline`` to write the notes; ``polish`` joins them with a side branch."""
     agents = [
         Agent("outline", "Outline {query}", "outline"),
@@ -662,8 +668,8 @@ def racing(model: MockLLM, *, careful: Step | None = None) -> MAS:
         ("careful", "polish"),
         ("side", "polish"),
     ]
-    steps = [] if careful is None else [careful]
-    return MAS(agents, edges, steps=steps, tools=[slow], outputs={"final": "text"}, llm=model)
+    script_nodes = [] if careful is None else [careful]
+    return MAS(agents, edges, script_nodes=script_nodes, tools=[slow], outputs={"final": "text"}, llm=model)
 
 
 @tool
@@ -706,9 +712,10 @@ def test_the_first_of_a_race_writes() -> None:
     assert trace.outputs == {"final": "done"}
     assert [r.agent for r in trace.records].count("polish") == 1
 
-    # a step contestant cannot be cut: it is waited for, and its writes are dropped
+    # a script node contestant cannot be cut: it is waited for, and its writes are dropped
     stepped = racing(
-        PollingLLM(lambda prompt: SECONDS[prompt.split()[0]]), careful=Step("careful", "slow", writes={"slow": "notes"})
+        PollingLLM(lambda prompt: SECONDS[prompt.split()[0]]),
+        careful=ScriptNode("careful", "slow", writes={"slow": "notes"}),
     )
     trace = stepped.run_state({"query": "q"})
     by = {record.agent: record for record in trace.records}
@@ -777,18 +784,18 @@ def test_each_inner_run_races_on_its_own() -> None:
             llm=PollingLLM(lambda prompt: SECONDS[prompt.split()[0]]),
         )
 
-    # two boxes whose systems race under the same names, on one run's meter
-    boxes = MAS(
+    # two subsystems whose systems race under the same names, on one run's meter
+    subsystem_nodes = MAS(
         [Agent("join", "Join {a} {b}", "final", ["a", "b"])],
         [("one", "join"), ("two", "join")],
-        boxes=[
-            Box("one", inner(), reads={"topic": "query"}, writes={"notes": "a"}),
-            Box("two", inner(), reads={"topic": "query"}, writes={"notes": "b"}),
+        subsystem_nodes=[
+            SubsystemNode("one", inner(), reads={"topic": "query"}, writes={"notes": "a"}),
+            SubsystemNode("two", inner(), reads={"topic": "query"}, writes={"notes": "b"}),
         ],
         outputs={"a": "text", "b": "text"},
         llm=MockLLM(lambda prompt: "joined"),
     )
-    trace = boxes.run_state({"query": "q"})
+    trace = subsystem_nodes.run_state({"query": "q"})
     assert trace.status == "ok"
     assert trace.outputs == {"a": "done", "b": "done"}
     for name in ("one", "two"):
@@ -850,7 +857,7 @@ def holding(meter: RunMeter, place: Callable[[], Any]) -> Iterator[threading.Eve
 
 
 def test_stop_with_budgets_and_gates() -> None:
-    # a stop beats a budget refusal; steps and calls alike are refused, with the reason
+    # a stop beats a budget refusal; script nodes and calls alike are refused, with the reason
     meter = RunMeter(Budget(max_calls=0))
     with pytest.raises(BudgetExceeded):
         meter.before_call()

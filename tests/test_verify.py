@@ -32,7 +32,7 @@ from tests.conftest import (
     render_page,
     render_pages,
 )
-from xmas import MAS, Agent, Box, Budget, ErrorKind, Human
+from xmas import MAS, Agent, Budget, ErrorKind, HumanNode, SubsystemNode
 from xmas.bundle import Lock
 from xmas.config import Config
 from xmas.convert import document_text
@@ -69,7 +69,7 @@ def gated() -> MAS:
     return MAS(
         [Agent("writer", "Write {query}", "draft")],
         [("writer", "approve")],
-        humans=[Human("approve", "approve", ["draft"], "approval", question="Ship {draft}?")],
+        human_nodes=[HumanNode("approve", "approve", ["draft"], "approval", question="Ship {draft}?")],
         outputs={"approval": "json"},
         llm=MockLLM(meta=True),
     )
@@ -328,16 +328,16 @@ def test_level_2_node_cases(tmp_path: Path) -> None:
     boxed = MAS(
         [Agent("writer", "Write about {query}", output="draft")],
         [("writer", "shorten")],
-        boxes=[Box("shorten", inner, reads={"page": "draft"}, writes={"short": "short"})],
+        subsystem_nodes=[SubsystemNode("shorten", inner, reads={"page": "draft"}, writes={"short": "short"})],
         llm=MockLLM(),
     )
     with pytest.raises(
-        ValueError, match="node 'cutter' sits inside box 'shorten': give the example to the box's system"
+        ValueError, match="node 'cutter' sits inside subsystem 'shorten': give the example to the subsystem's system"
     ):
         run_node(boxed, "cutter", {"page": "x"})
-    whole = run_node(boxed, "shorten", {"draft": "A draft."})  # the box itself is one node
+    whole = run_node(boxed, "shorten", {"draft": "A draft."})  # the subsystem itself is one node
     assert whole.outputs == {"short": "echo:Cut A draft."}
-    assert whole.records[0].kind == "box"
+    assert whole.records[0].kind == "subsystem"
     with pytest.raises(ValueError, match=r"'nobody' is no node of the system; its nodes: \['shorten', 'writer'\]"):
         run_node(boxed, "nobody", {})
     asked = gated()
@@ -570,7 +570,7 @@ def test_save_examples_keeps_media_in_the_bundle(tmp_path: Path, png: Path) -> N
     (page,) = reviewer["inputs"]["slide_png"]
     assert page["location"].startswith("examples/media/")
     assert (other / page["location"]).read_bytes() == b"page intro"
-    assert render["recorded"] == [page]  # the step's pictures, compared by their bytes
+    assert render["recorded"] == [page]  # the script node's pictures, compared by their bytes
     report = check(media, 2, examples=other)
     assert [r.passed for r in report.examples] == [True, True]
     assert len(seer.parts) == 2

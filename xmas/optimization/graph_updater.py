@@ -40,8 +40,8 @@ class GraphUpdater:
        prompt that never names a variable renders without it.
 
     A version 2 system mutates around what it holds still (see
-    :class:`~xmas.optimization.topology.Fixed`): steps and boxes stay steps and
-    boxes, human nodes, frozen agents and conditional edges stay as they are,
+    :class:`~xmas.optimization.topology.Fixed`): script nodes and subsystems stay script nodes and
+    subsystems, human nodes, frozen agents and conditional edges stay as they are,
     and a candidate its own check refuses is dropped rather than returned. A
     candidate keeps the parent's asker and run store.
 
@@ -138,7 +138,7 @@ class GraphUpdater:
     def rebuild(self, mas: MAS, names: list[str], edges: Edges) -> MAS:
         """Build a runnable system from a mutated topology; ``ValueError`` if a version 2 candidate does not check.
 
-        Steps, boxes and human nodes come over as they are, and so do the agents whose
+        Script nodes, subsystems and human nodes come over as they are, and so do the agents whose
         predecessors did not change, frozen ones among them; a version 2 system
         also keeps its conditional edges and its named ``START``/``END`` edges,
         in the parent's order.
@@ -230,10 +230,10 @@ class GraphUpdater:
         every frozen agent and every endpoint of a conditional edge. Any other
         agent keeps the reads still satisfiable (an input, or written by a node
         that now runs before it) and gains every value its new predecessors
-        write; one left with nothing reads the system's inputs. Steps, boxes and
+        write; one left with nothing reads the system's inputs. Script nodes, subsystems and
         human nodes are not rewired.
         """
-        code = {*mas.steps, *mas.boxes, *mas.humans}
+        code = {*mas.script_nodes, *mas.subsystem_nodes, *mas.human_nodes}
         writes: dict[str, set[str]] = {name: {self.output_of(mas, name)} for name in names if name not in code}
         agents = list(writes)
         for value, writers in mas.checked().writers.items():
@@ -259,8 +259,8 @@ class GraphUpdater:
     # --------------------------------------------------------------- helpers
 
     def names_of(self, mas: MAS) -> list[str]:
-        """Return a system's node names: agents, then steps, boxes and human nodes."""
-        return [*mas.agents, *mas.steps, *mas.boxes, *mas.humans]
+        """Return a system's node names: agents, then script nodes, subsystems and human nodes."""
+        return [*mas.agents, *mas.script_nodes, *mas.subsystem_nodes, *mas.human_nodes]
 
     def edges_of(self, mas: MAS) -> Edges:
         """Return a system's node-level edges as pairs, conditional ones included, without the sentinel wiring."""
@@ -277,10 +277,10 @@ class GraphUpdater:
         if mas.version != VERSION_2:
             return None
         conditional = [edge for edge in mas.edges if edge.kind is not EdgeKind.PLAIN]
-        held = set(mas.frozen).union(mas.each, mas.humans, *({edge.source, edge.target} for edge in conditional))
+        held = set(mas.frozen).union(mas.each, mas.human_nodes, *({edge.source, edge.target} for edge in conditional))
         return Fixed(
             nodes=frozenset(held.difference(SENTINELS)),
-            code=frozenset([*mas.steps, *mas.boxes, *mas.humans]),
+            code=frozenset([*mas.script_nodes, *mas.subsystem_nodes, *mas.human_nodes]),
             terminals=frozenset(terminals(self.names_of(mas), self.edges_of(mas))),
             conditional=frozenset((edge.source, edge.target) for edge in conditional),
         )
