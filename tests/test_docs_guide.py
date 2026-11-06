@@ -34,7 +34,6 @@ from xmas import (
     MAS,
     Agent,
     Budget,
-    Code,
     Edge,
     EdgeKind,
     ErrorKind,
@@ -43,8 +42,9 @@ from xmas import (
     GSM8KTask,
     HealthSettings,
     Image,
-    MASModule,
     Ref,
+    ScriptNode,
+    SubsystemNode,
     TokenUsage,
 )
 from xmas.bundle import parse_prompt, read
@@ -70,12 +70,12 @@ def page(name: str) -> str:
     return (GUIDE / name).read_text(encoding="utf-8")
 
 
-STEPS = page("steps-and-values.md")
+STEPS = page("scripts-and-values.md")
 ANSWER_FORMS = page("answer-forms.md")
 CONDITIONS = page("conditions-and-loops.md")
 READING = page("reading-a-run.md")
-MEDIA = page("media.md")
-PEOPLE = page("people.md")
+MEDIA = page("assets.md")
+PEOPLE = page("human.md")
 BUNDLES = page("bundles.md")
 ROADMAP = page("roadmap.md")
 QUERY = "Why is the sky blue?"
@@ -155,10 +155,10 @@ def looping_system(llm: MockLLM, counter: Tool = count_words) -> MAS:
     )
     return MAS(
         [writer, judge],
-        code_nodes=[
-            Code("count", uses="count_words"),
-            Code("publish", uses="publish"),
-            Code("sorry", uses="apologize"),
+        script_nodes=[
+            ScriptNode("count", uses="count_words"),
+            ScriptNode("publish", uses="publish"),
+            ScriptNode("sorry", uses="apologize"),
         ],
         edges=[
             ("writer", "count"),
@@ -190,11 +190,11 @@ def quickstart_llm() -> MockLLM:
     return MockLLM(lambda prompt: "Rayleigh scattering." if "as your own" in prompt else "Short waves scatter more.")
 
 
-# -------------------------- docs/guide/steps-and-values.md: Code between agents: steps
+# -------------------------- docs/guide/scripts-and-values.md: Code between agents: steps
 
 
 def test_steps_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None:
-    """Mirrors docs/guide/steps-and-values.md."""
+    """Mirrors docs/guide/scripts-and-values.md."""
     llm = scripted(review="A fine answer.")
 
     writer = Agent("writer", prompt="Write a short answer to: {query}", output="draft")
@@ -206,7 +206,7 @@ def test_steps_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None
     )
     mas = MAS(
         [writer, judge],
-        code_nodes=[Code("count", uses="count_words")],
+        script_nodes=[ScriptNode("count", uses="count_words")],
         edges=[("writer", "count"), ("count", "judge")],
         tools=[count_words],
         llm=llm,
@@ -218,14 +218,14 @@ def test_steps_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None
 
     assert capsys.readouterr().out.splitlines() == ["A fine answer.", "['writer', 'count', 'judge']"]
     count = mas.last_trace["count"][0]
-    assert (count.kind, count.outputs, count.cost_usd) == ("code", {"count_words": "4"}, 0.0)
+    assert (count.kind, count.outputs, count.cost_usd) == ("script", {"count_words": "4"}, 0.0)
     assert mas.last_trace.cost_usd is None, "the writer's cost is unknown, so the sum is too"
     assert f"Draft, 4 words: {DRAFT}" in llm.calls[-1]
-    assert len(llm.calls) == 2, "a code node makes no model call"
+    assert len(llm.calls) == 2, "a script node makes no model call"
 
 
 def test_a_step_writes_text_for_str_json_otherwise_and_renames_both_sides() -> None:
-    """Mirrors docs/guide/steps-and-values.md."""
+    """Mirrors docs/guide/scripts-and-values.md."""
 
     @tool
     def shout(answer: str) -> str:
@@ -237,9 +237,9 @@ def test_a_step_writes_text_for_str_json_otherwise_and_renames_both_sides() -> N
     judge = Agent("judge", prompt="{words} words: {shout}", inputs=["words", "shout"], output="review")
     mas = MAS(
         [writer, judge],
-        code_nodes=[
-            Code("count", uses="count_words", reads={"draft": "answer"}, writes={"count_words": "words"}),
-            Code("loud", uses="shout"),
+        script_nodes=[
+            ScriptNode("count", uses="count_words", reads={"draft": "answer"}, writes={"count_words": "words"}),
+            ScriptNode("loud", uses="shout"),
         ],
         edges=[("writer", "count"), ("writer", "loud"), ("count", "judge"), ("loud", "judge")],
         tools=[count_words, shout],
@@ -255,7 +255,7 @@ def test_a_step_writes_text_for_str_json_otherwise_and_renames_both_sides() -> N
 
 
 def test_a_tool_needs_a_docstring_and_a_hint_on_every_parameter() -> None:
-    """Mirrors docs/guide/steps-and-values.md."""
+    """Mirrors docs/guide/scripts-and-values.md."""
 
     def no_doc(draft: str) -> int:
         return len(draft)
@@ -271,13 +271,13 @@ def test_a_tool_needs_a_docstring_and_a_hint_on_every_parameter() -> None:
 
 
 def test_the_same_function_is_a_step_and_an_agents_tool() -> None:
-    """Mirrors docs/guide/steps-and-values.md."""
+    """Mirrors docs/guide/scripts-and-values.md."""
     model = MockLLM(turns=[("", [req("count_words", '{"draft": "one two three"}')])], default=(DRAFT, []))
     writer = Agent("writer", prompt="Write a short answer to: {query}", output="draft", tools=["count_words"])
     judge = Agent("judge", prompt="{count_words}: {draft}", inputs=["draft", "count_words"], output="review")
     mas = MAS(
         [writer, judge],
-        code_nodes=[Code("count", uses="count_words")],
+        script_nodes=[ScriptNode("count", uses="count_words")],
         edges=[("writer", "count"), ("count", "judge")],
         tools=[count_words],
         llm=model,
@@ -303,12 +303,12 @@ class RemotePages(ToolSource):
 
 
 def test_an_mcp_style_tool_runs_as_a_step() -> None:
-    """Mirrors docs/guide/steps-and-values.md."""
+    """Mirrors docs/guide/scripts-and-values.md."""
     llm = scripted(review="ok")
     judge = Agent("judge", prompt="Is it a good answer? {web_search}", inputs=["web_search"], output="review")
     mas = MAS(
         [judge],
-        code_nodes=[Code("search", uses="web_search")],
+        script_nodes=[ScriptNode("search", uses="web_search")],
         edges=[("search", "judge")],
         tools=[RemotePages()],
         llm=llm,
@@ -336,7 +336,7 @@ def test_answer_form_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -
     )
     mas = MAS(
         [writer, judge],
-        code_nodes=[Code("count", uses="count_words")],
+        script_nodes=[ScriptNode("count", uses="count_words")],
         edges=[("writer", "count"), ("count", "judge")],
         tools=[count_words],
         llm=llm,
@@ -374,7 +374,7 @@ def test_two_misses_end_the_run_with_bad_format() -> None:
     writer = Agent("writer", prompt="Write a short answer to: {query}", output="draft")
     mas = MAS(
         [writer, json_judge()],
-        code_nodes=[Code("count", uses="count_words")],
+        script_nodes=[ScriptNode("count", uses="count_words")],
         edges=[("writer", "count"), ("count", "judge")],
         tools=[count_words],
         llm=llm,
@@ -404,11 +404,11 @@ def test_the_form_dialect_the_guide_names() -> None:
         Agent("judge", prompt="{query}", output="verdict", output_type="json", schema={"fits": {"type": "boolean"}})
 
 
-# ---------------------- docs/guide/steps-and-values.md: Mistakes found before any call
+# ---------------------- docs/guide/scripts-and-values.md: Mistakes found before any call
 
 
 def test_mistakes_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None:
-    """Mirrors docs/guide/steps-and-values.md."""
+    """Mirrors docs/guide/scripts-and-values.md."""
     llm = scripted()
     writer = Agent("writer", prompt="Write a short answer to: {query}", output="draft")
 
@@ -421,7 +421,7 @@ def test_mistakes_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> N
     try:
         MAS(
             [writer, judge_with_typos],
-            code_nodes=[Code("count", uses="count_word")],
+            script_nodes=[ScriptNode("count", uses="count_word")],
             edges=[("writer", "count"), ("count", "judge")],
             tools=[count_words],
             llm=llm,
@@ -432,7 +432,7 @@ def test_mistakes_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> N
     shown = (
         "The system does not check (3 problems):\n"
         "- agent 'judge': prompt placeholders ['count_words', 'style'] are not among its reads ['draft', 'notes']\n"
-        "- Code 'count' uses unknown callable 'count_word'; available: ['count_words'].\n"
+        "- ScriptNode 'count' uses unknown callable 'count_word'; available: ['count_words'].\n"
         "- 'judge' reads 'notes', which is neither an input nor written by any node\n"
     )
     assert capsys.readouterr().out == shown
@@ -441,7 +441,7 @@ def test_mistakes_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> N
 
 
 def test_the_check_refuses_two_writers_a_type_clash_and_a_bad_condition() -> None:
-    """Mirrors docs/guide/steps-and-values.md."""
+    """Mirrors docs/guide/scripts-and-values.md."""
 
     @tool
     def shout(draft: str) -> str:
@@ -451,17 +451,17 @@ def test_the_check_refuses_two_writers_a_type_clash_and_a_bad_condition() -> Non
     llm = scripted()
     two_writers = [Agent("a", "{query}", output="draft"), Agent("b", "{query}", output="draft")]
     with pytest.raises(ValueError, match="draft"):
-        MAS(two_writers, code_nodes=[Code("s", uses="shout")], tools=[shout], llm=llm)
+        MAS(two_writers, script_nodes=[ScriptNode("s", uses="shout")], tools=[shout], llm=llm)
 
     json_writer = Agent("judge", "{query}", output="draft", output_type="json")
     with pytest.raises(ValueError, match="json"):
-        MAS([json_writer], code_nodes=[Code("s", uses="shout")], edges=[("judge", "s")], tools=[shout], llm=llm)
+        MAS([json_writer], script_nodes=[ScriptNode("s", uses="shout")], edges=[("judge", "s")], tools=[shout], llm=llm)
 
     looping = [Agent("writer", "{query}", output="draft"), json_judge()]
     with pytest.raises(ValueError, match="position"):
         MAS(
             looping,
-            code_nodes=[Code("count", uses="count_words"), Code("publish", uses="publish")],
+            script_nodes=[ScriptNode("count", uses="count_words"), ScriptNode("publish", uses="publish")],
             edges=[
                 ("writer", "count"),
                 ("count", "judge"),
@@ -535,7 +535,7 @@ def test_an_unrouted_error_fails_the_run_and_budget_and_stop_are_never_routable(
         with pytest.raises(ValueError, match=kind):
             MAS(
                 [Agent("writer", "{query}", output="draft")],
-                code_nodes=[Code("sorry", uses="apologize")],
+                script_nodes=[ScriptNode("sorry", uses="apologize")],
                 edges=[Edge("writer", "sorry", kind=EdgeKind.ERROR, errors=(kind,))],
                 tools=[apologize],
                 llm=scripted(),
@@ -591,7 +591,7 @@ def test_a_join_runs_once_after_both_edges() -> None:
     judge = Agent("judge", prompt="{draft} {notes} {count_words}", inputs=["draft", "notes", "count_words"], output="v")
     mas = MAS(
         [writer, critic, judge],
-        code_nodes=[Code("count", uses="count_words")],
+        script_nodes=[ScriptNode("count", uses="count_words")],
         edges=[("writer", "count"), ("writer", "critic"), ("count", "judge"), ("critic", "judge")],
         tools=[count_words],
         llm=llm,
@@ -637,7 +637,7 @@ def test_reading_a_run_block_runs_as_written(capsys: pytest.CaptureFixture[str])
     for name in ("error_kind", "served_model", "route", "capped", "rejected", "kind"):
         assert hasattr(record, name), name
     assert record.cost_usd is None, "a model that reports no cost leaves it unknown, never 0"
-    assert trace["count"][0].kind == "code"
+    assert trace["count"][0].kind == "script"
     assert {status.value for status in xmas.RunStatus} >= {"ok", "failed", "over_budget"}
 
 
@@ -716,28 +716,28 @@ def test_describe_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> N
 
     picture = mas.describe()
     print([(node["name"], node["kind"]) for node in picture["nodes"]])
-    # [('writer', 'agent'), ('count', 'code'), ('judge', 'agent'), ('publish', 'code'), ('sorry', 'code')]
+    # [('writer', 'agent'), ('count', 'script'), ('judge', 'agent'), ('publish', 'script'), ('sorry', 'script')]
     print([edge["kind"] for edge in picture["edges"] if not edge.get("implicit")])
     # ['plain', 'plain', 'while', 'switch', 'else', 'error']
     mas.agents["judge"].prompt += "\nBe strict."
     print(mas.describe()["id"] == picture["id"])  # True
 
     assert capsys.readouterr().out.splitlines() == [
-        "[('writer', 'agent'), ('count', 'code'), ('judge', 'agent'), ('publish', 'code'), ('sorry', 'code')]",
+        "[('writer', 'agent'), ('count', 'script'), ('judge', 'agent'), ('publish', 'script'), ('sorry', 'script')]",
         "['plain', 'plain', 'while', 'switch', 'else', 'error']",
         "True",
     ]
     rewired = looping_system(scripted()).copy(edges=[edge for edge in mas.edges if edge.kind is not EdgeKind.ERROR])
     assert rewired.describe()["id"] != picture["id"]
     node = picture["nodes"][2]
-    assert {"model", "reads", "writes", "detached"} <= set(node)
+    assert {"model", "reads", "writes", "frozen"} <= set(node)
 
 
-# --------------------------------------- docs/guide/boxes.md: A system inside a system
+# --------------------------------------- docs/guide/subsystems.md: A system inside a system
 
 
 def test_box_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None:
-    """Mirrors docs/guide/boxes.md."""
+    """Mirrors docs/guide/subsystems.md."""
     llm = MockLLM(
         lambda prompt: (
             "Air scatters blue light." if prompt.startswith("Cut") else "Sunlight hits air, which scatters blue."
@@ -745,14 +745,14 @@ def test_box_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None:
     )
 
     cutter = Agent("cutter", prompt="Cut this to half its length: {page}", inputs=["page"], output="short")
-    shorten = MASModule(
+    shorten = SubsystemNode(
         "shorten",
         MAS([cutter], inputs={"page": "text"}, llm=llm),
         reads={"page": "draft"},
         writes={"short": "summary"},
     )
     first_draft = Agent("writer", prompt="Write a short answer to: {query}", output="draft")
-    outer = MAS([first_draft], modules=[shorten], edges=[("writer", "shorten")], llm=llm)
+    outer = MAS([first_draft], subsystem_nodes=[shorten], edges=[("writer", "shorten")], llm=llm)
 
     trace = outer.run("Why is the sky blue?")
     print(trace.output)  # the cutter's shorter draft
@@ -764,7 +764,7 @@ def test_box_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None:
         "[((), 'writer'), ((), 'shorten'), (('shorten',), 'cutter')]",
     ]
     box = trace["shorten"][0]
-    assert box.kind == "module"
+    assert box.kind == "subsystem"
     assert box.inner is not None
     assert box.cost_usd is None, "a model that reports no cost leaves every sum unknown"
     assert trace.cost_usd is None, "a model that reports no cost leaves every sum unknown"
@@ -774,14 +774,14 @@ def test_box_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_a_box_costs_its_inner_records_sum() -> None:
-    """Mirrors docs/guide/boxes.md."""
+    """Mirrors docs/guide/subsystems.md."""
     llm = MockLLM(lambda prompt: "Air scatters blue light.", meta=True)
     cutter = Agent("cutter", prompt="Cut this to half its length: {page}", inputs=["page"], output="short")
-    shorten = MASModule(
+    shorten = SubsystemNode(
         "shorten", MAS([cutter], inputs={"page": "text"}, llm=llm), {"page": "draft"}, {"short": "summary"}
     )
     writer = Agent("writer", prompt="Write a short answer to: {query}", output="draft")
-    trace = MAS([writer], modules=[shorten], edges=[("writer", "shorten")], llm=llm).run(QUERY)
+    trace = MAS([writer], subsystem_nodes=[shorten], edges=[("writer", "shorten")], llm=llm).run(QUERY)
 
     (box,) = trace["shorten"]
     assert box.cost_usd == pytest.approx(0.01)
@@ -790,14 +790,14 @@ def test_a_box_costs_its_inner_records_sum() -> None:
 
 
 def test_a_box_spends_from_the_outer_budget() -> None:
-    """Mirrors docs/guide/boxes.md."""
+    """Mirrors docs/guide/subsystems.md."""
     llm = scripted()
     cutter = Agent("cutter", prompt="Cut this to half its length: {page}", inputs=["page"], output="short")
-    shorten = MASModule(
+    shorten = SubsystemNode(
         "shorten", MAS([cutter], inputs={"page": "text"}, llm=llm), {"page": "draft"}, {"short": "summary"}
     )
     writer = Agent("writer", prompt="Write a short answer to: {query}", output="draft")
-    outer = MAS([writer], modules=[shorten], edges=[("writer", "shorten")], llm=llm, budget=Budget(max_calls=1))
+    outer = MAS([writer], subsystem_nodes=[shorten], edges=[("writer", "shorten")], llm=llm, budget=Budget(max_calls=1))
 
     assert outer.run(QUERY).status == "over_budget"
 
@@ -845,7 +845,7 @@ def test_for_each_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> N
     page_writer = Agent("page_writer", prompt="Write one page on: {page}", inputs=["page"], output="draft")
     deck = MAS(
         [planner, page_writer],
-        code_nodes=[Code("count", uses="count_words"), Code("total", uses="total_words")],
+        script_nodes=[ScriptNode("count", uses="count_words"), ScriptNode("total", uses="total_words")],
         edges=[("planner", "page_writer"), ("page_writer", "count"), ("count", "total")],
         each={"page_writer": ForEach("page", "plan.pages", at_once=2, key="id"), "count": "page in plan.pages"},
         tools=[count_words, total_words],
@@ -895,7 +895,7 @@ def test_for_each_claims_without_a_block() -> None:
     def chain(form: ForEach, **kwargs: Any) -> MAS:
         return MAS(
             [page_writer],
-            code_nodes=[Code("count", uses="count_words")],
+            script_nodes=[ScriptNode("count", uses="count_words")],
             edges=[("page_writer", "count")],
             each={"page_writer": form, "count": "page in plan.pages"},
             inputs={"plan": "json"},
@@ -921,7 +921,7 @@ def test_for_each_claims_without_a_block() -> None:
     # the spec form: each node carries the short form, the first may write the long one
     spec = chain(ForEach("page", "plan.pages", key="id")).to_dict()
     assert spec["agents"][0]["for each"] == {"item": "page", "in": "plan.pages", "key": "id"}
-    assert spec["code_nodes"][0]["for each"] == "page in plan.pages"
+    assert spec["script_nodes"][0]["for each"] == "page in plan.pages"
     assert ForEach.parse("page in plan.pages") == ForEach("page", "plan.pages")
 
     # a budget stop ends the whole run
@@ -933,7 +933,7 @@ def test_for_each_claims_without_a_block() -> None:
     with pytest.raises(ValueError, match="chains do not nest"):
         MAS(
             [],
-            modules=[MASModule("pages", inner, reads={"plan": "plan"}, writes={"draft": "drafts"})],
+            subsystem_nodes=[SubsystemNode("pages", inner, reads={"plan": "plan"}, writes={"draft": "drafts"})],
             each={"pages": "deck in decks"},
             inputs={"decks": "json"},
         )
@@ -949,7 +949,7 @@ def test_run_state_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> 
 
     pages = MAS(
         [page_writer],
-        code_nodes=[Code("count", uses="count_words"), Code("total", uses="total_words")],
+        script_nodes=[ScriptNode("count", uses="count_words"), ScriptNode("total", uses="total_words")],
         edges=[("page_writer", "count"), ("count", "total")],
         each={"page_writer": ForEach("page", "plan.pages", key="id"), "count": "page in plan.pages"},
         inputs={"plan": "json"},
@@ -1007,7 +1007,7 @@ def test_run_state_claims_without_a_block() -> None:
     writer = Agent("writer", prompt="Write a short answer to: {query}", output="draft")
     retried = MAS(
         [writer],
-        code_nodes=[Code("count", uses="flaky")],
+        script_nodes=[ScriptNode("count", uses="flaky")],
         edges=[("writer", "count")],
         tools=[flaky],
         llm=scripted(),
@@ -1029,7 +1029,7 @@ def test_run_state_claims_without_a_block() -> None:
     assert slide.inputs == ["page"]
 
 
-# ---------------------------- docs/guide/media.md: Pictures, documents and other files
+# ---------------------------- docs/guide/assets.md: Pictures, documents and other files
 
 
 @tool(writes={"cover": "image"})
@@ -1049,12 +1049,12 @@ def slides(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_a_judge_looks_at_the_pictures(slides: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """Mirrors docs/guide/media.md."""
+    """Mirrors docs/guide/assets.md."""
     reviewer = Agent("reviewer", prompt="Review these slides.\n{pages}", inputs=["pages"], output="review")
     vision = SeeingLLM("Clear slides. The second needs a title.")
     deck = MAS(
         [reviewer],
-        code_nodes=[Code("cover", uses="keep_cover")],
+        script_nodes=[ScriptNode("cover", uses="keep_cover")],
         inputs={"pages": "list of image"},
         outputs={"review": "text", "cover": "image"},
         tools=[keep_cover],
@@ -1087,7 +1087,7 @@ def test_a_judge_looks_at_the_pictures(slides: Path, capsys: pytest.CaptureFixtu
         "The system does not check (1 problem):",
         (
             "- agent 'reviewer' reads image 'pages', but the default model accepts only text; "
-            'give it accepts = ("text", "image") or convert it first with a code node'
+            'give it accepts = ("text", "image") or convert it first with a script node'
         ),
     ]
 
@@ -1099,8 +1099,8 @@ class Blind(SeeingLLM):
 
 
 def test_media_claims_refs_and_bytes(slides: Path) -> None:
-    """Mirrors docs/guide/media.md."""
-    # a referenced file that changes is refused; a code node's Path is copied; bytes are refused
+    """Mirrors docs/guide/assets.md."""
+    # a referenced file that changes is refused; a script node's Path is copied; bytes are refused
     page = Ref.from_path("slide-2.png")
     Path("slide-2.png").write_bytes(PNG)
     with pytest.raises(ValueError, match="changed"):
@@ -1115,7 +1115,7 @@ def test_media_claims_refs_and_bytes(slides: Path) -> None:
 
     raw = MAS(
         [Agent("reviewer", prompt="Review {pages}", inputs=["pages"], output="review")],
-        code_nodes=[Code("cover", uses="raw_cover")],
+        script_nodes=[ScriptNode("cover", uses="raw_cover")],
         inputs={"pages": "list of image"},
         outputs={"review": "text", "cover": "image"},
         tools=[raw_cover],
@@ -1126,7 +1126,7 @@ def test_media_claims_refs_and_bytes(slides: Path) -> None:
 
 
 def test_media_claims_models_section(slides: Path) -> None:
-    """Mirrors docs/guide/media.md."""
+    """Mirrors docs/guide/assets.md."""
     # the models section: the page's entries, models over the model's own word, nothing else
     models = yaml.safe_load("models:" + MEDIA.split("```yaml\nmodels:", 1)[1].split("```", 1)[0])
     assert models == {"models": {"vision-model": {"accepts": ["image"]}, "painter-model": {"produces": ["image"]}}}
@@ -1168,17 +1168,19 @@ def test_media_claims_models_section(slides: Path) -> None:
 
 @pytest.mark.usefixtures("slides")
 def test_media_claims_conversion_steps() -> None:
-    """Mirrors docs/guide/media.md."""
-    # documents and tables go through a conversion code node
+    """Mirrors docs/guide/assets.md."""
+    # documents and tables go through a conversion script node
     Path("house.md").write_text("# House rules\nOne idea per slide.", encoding="utf-8")
     writer = Agent("writer", prompt="Follow these rules: {house_rules}", inputs=["house_rules"], output="draft")
     with pytest.raises(
-        ValueError, match=r"through a conversion code node, such as one using xmas\.convert\.document_text"
+        ValueError, match=r"through a conversion script node, such as one using xmas\.convert\.document_text"
     ):
         MAS([Agent("writer", "Follow {house}", "draft", inputs=["house"])], inputs={"house": "document"}, llm=MockLLM())
     ruled = MAS(
         [writer],
-        code_nodes=[Code("rules", uses="document_text", reads={"source": "house"}, writes={"content": "house_rules"})],
+        script_nodes=[
+            ScriptNode("rules", uses="document_text", reads={"source": "house"}, writes={"content": "house_rules"})
+        ],
         edges=[("rules", "writer")],
         inputs={"house": "document"},
         tools=[document_text],
@@ -1193,7 +1195,7 @@ def test_media_claims_conversion_steps() -> None:
 
 @pytest.mark.usefixtures("slides")
 def test_media_claims_image_answers() -> None:
-    """Mirrors docs/guide/media.md."""
+    """Mirrors docs/guide/assets.md."""
     # an image answer needs a model that produces images and no tools
     painter = Agent("painter", prompt="Draw {query}", output="picture", output_type="image")
     with pytest.raises(ValueError, match="produces only text"):
@@ -1209,12 +1211,12 @@ def test_media_claims_image_answers() -> None:
 
 @pytest.mark.usefixtures("slides")
 def test_media_claims_remote_and_mcp_tools() -> None:
-    """Mirrors docs/guide/media.md."""
-    # a remote tool reads no pictures or files; an MCP tool may write a picture
-    with pytest.raises(ValueError, match="remote tools read no pictures or files"):
+    """Mirrors docs/guide/assets.md."""
+    # a remote tool reads no assets; an MCP tool may write a picture
+    with pytest.raises(ValueError, match="remote tools read no assets"):
         MAS(
             [Agent("judge", prompt="Is it a good answer? {web_search}", inputs=["web_search"], output="review")],
-            code_nodes=[Code("search", uses="web_search", reads={"query": "pages"})],
+            script_nodes=[ScriptNode("search", uses="web_search", reads={"query": "pages"})],
             edges=[("search", "judge")],
             inputs={"pages": "list of image"},
             tools=[RemotePages()],
@@ -1224,16 +1226,16 @@ def test_media_claims_remote_and_mcp_tools() -> None:
     assert "writes" in inspect.signature(mcp.MCPTools).parameters
 
 
-# ------------------------------------------- docs/guide/people.md: People in the graph
+# ------------------------------------------- docs/guide/human.md: People in the graph
 
 
 def test_people_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None:
-    """Mirrors docs/guide/people.md."""
-    from xmas import END, HumanAction
+    """Mirrors docs/guide/human.md."""
+    from xmas import END, HumanNode
 
     llm = scripted()
 
-    editor = HumanAction(
+    editor = HumanNode(
         "editor",
         "approve",
         reads=["draft"],
@@ -1243,8 +1245,8 @@ def test_people_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> Non
     )
     gated = MAS(
         [Agent("writer", prompt="Write a short answer to: {query}", output="draft")],
-        code_nodes=[Code("publish", uses="publish")],
-        human_actions=[editor],
+        script_nodes=[ScriptNode("publish", uses="publish")],
+        human_nodes=[editor],
         edges=[
             ("writer", "editor"),
             Edge("editor", "publish", kind=EdgeKind.WHEN, when="approval.approved"),
@@ -1266,14 +1268,14 @@ def test_people_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> Non
         f"ok Published: {DRAFT}",
     ]
     (record,) = done["editor"]
-    assert (record.kind, record.cost_usd, record.inputs) == ("human_action", 0.0, {"draft": DRAFT})
+    assert (record.kind, record.cost_usd, record.inputs) == ("human", 0.0, {"draft": DRAFT})
     assert json.loads(record.raw_response)["who"] == "tom"
     assert record.wait_s is not None
 
 
 def test_people_claims_without_a_block() -> None:
-    """Mirrors docs/guide/people.md."""
-    from xmas import HumanAction, ReplayAsker
+    """Mirrors docs/guide/human.md."""
+    from xmas import HumanNode, ReplayAsker
     from xmas.human import ANSWER_FIELDS, COMMON_FIELDS, FORMS
     from xmas.llms.api_llm import APILLM
 
@@ -1293,12 +1295,9 @@ def test_people_claims_without_a_block() -> None:
 
     # a timeout takes the default; an unattended run takes it too, or fails by name
     def gate(**settings: Any) -> MAS:
-        approve = HumanAction("approve", "approve", ["draft"], "approval", question="Ship {draft}?", **settings)
+        approve = HumanNode("approve", "approve", ["draft"], "approval", question="Ship {draft}?", **settings)
         return MAS(
-            [Agent("writer", "Write {query}", "draft")],
-            [("writer", "approve")],
-            human_actions=[approve],
-            llm=scripted(),
+            [Agent("writer", "Write {query}", "draft")], [("writer", "approve")], human_nodes=[approve], llm=scripted()
         )
 
     timed = gate(timeout_s=0, default={"approved": False}).run_state({"query": QUERY})
@@ -1307,7 +1306,7 @@ def test_people_claims_without_a_block() -> None:
     assert gate(default={"approved": True}).run(QUERY).status == "ok"
     failed = gate().run(QUERY)
     assert failed.status == "failed"
-    assert "human action 'approve' got no answer" in str(failed.error)
+    assert "human node 'approve' got no answer" in str(failed.error)
 
     # an asker that replays recorded answers lets a system with people run unattended
     asked = gate()
@@ -1319,11 +1318,11 @@ def test_people_claims_without_a_block() -> None:
     assert (again["approved"], again["who"]) == (True, "tom")
 
 
-# ---------------------------------------------------------- docs/guide/people.md: Stop
+# ---------------------------------------------------------- docs/guide/human.md: Stop
 
 
 def test_stop_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None:
-    """Mirrors docs/guide/people.md."""
+    """Mirrors docs/guide/human.md."""
     import threading
 
     llm = PollingLLM()
@@ -1343,11 +1342,11 @@ def test_stop_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None:
     assert hasattr(xmas, "cancel_flag")
 
 
-# ------------------------------------------------------ docs/guide/people.md: first of
+# ------------------------------------------------------ docs/guide/human.md: first of
 
 
 def test_first_of_block_runs_as_written(capsys: pytest.CaptureFixture[str]) -> None:
-    """Mirrors docs/guide/people.md."""
+    """Mirrors docs/guide/human.md."""
     llm = PollingLLM(lambda prompt: 3.0 if prompt.startswith("A careful") else 0.0)
 
     outline = Agent("outline", prompt="Outline an answer to: {query}", output="outline")
@@ -1391,12 +1390,12 @@ def test_version_2_save_block_runs_as_written(capsys: pytest.CaptureFixture[str]
     llm = scripted()
     mas = looping_system(llm)
 
-    spec = mas.to_dict()  # version, agents, code nodes, edges, callables, prompts
+    spec = mas.to_dict()  # version, agents, script nodes, edges, callables, prompts
     rebuilt = MAS.from_dict(spec, llm=llm, tools=[count_words, publish, apologize])
     print(rebuilt.describe()["id"] == mas.describe()["id"])  # True
 
     assert capsys.readouterr().out == "True\n"
-    assert list(spec) == ["version", "agents", "code_nodes", "edges", "callables", "prompts"]
+    assert list(spec) == ["version", "agents", "script_nodes", "edges", "callables", "prompts"]
     assert spec["version"] == 2
     shown = (
         "- writer -> count -> judge\n"
@@ -1462,7 +1461,15 @@ def test_the_bundle_block_runs_as_written(endpoint: MockLLM, capsys: pytest.Capt
     files = read("team.mas")
     assert sorted(files) == ["callables.yaml", "prompts/judge.md", "prompts/writer.md", "xmas.lock", "xmas.yaml"]
     listed = [line.split()[0] for line in block("text", "team.mas/").splitlines()[1:]]
-    assert listed == ["xmas.yaml", "callables.yaml", "prompts/", "modules/", "examples/", "optimize.yaml", "xmas.lock"]
+    assert listed == [
+        "xmas.yaml",
+        "callables.yaml",
+        "prompts/",
+        "subsystems/",
+        "examples/",
+        "optimize.yaml",
+        "xmas.lock",
+    ]
     assert yaml.safe_load(block("yaml", "version: 2\nagents:")) == yaml.safe_load(files["xmas.yaml"])
     shown = block("markdown", "---\nschema:")
     assert parse_prompt(shown, "judge.md") == parse_prompt(files["prompts/judge.md"].decode(), "judge.md")
@@ -1602,17 +1609,17 @@ def test_cantante_block_runs_as_written(tmp_path: Path, monkeypatch: pytest.Monk
     assert MAS.from_yaml("team-optimized.yaml", llm=llm).agents.keys() == {"intern", "boss"}
 
 
-def test_a_detached_node_is_never_an_optimizer_target_and_makes_the_system_version_2() -> None:
+def test_a_frozen_node_is_never_an_optimizer_target_and_makes_the_system_version_2() -> None:
     """Mirrors docs/guide/optimization.md."""
     from xmas.optimization.updaters import movable_agents
 
     intern, boss = quickstart_agents()
-    boss.detached = True
-    detached = MAS([intern, boss], edges=[("intern", "boss")], llm=quickstart_llm())
+    boss.frozen = True
+    frozen = MAS([intern, boss], edges=[("intern", "boss")], llm=quickstart_llm())
 
-    assert movable_agents(detached) == ["intern"]
-    assert detached.version == 2
-    assert detached.detached == frozenset({"boss"})
+    assert movable_agents(frozen) == ["intern"]
+    assert frozen.version == 2
+    assert frozen.frozen == frozenset({"boss"})
 
 
 # ---------------------------------- docs/guide/optimization.md: xmas and promptolution
@@ -1625,7 +1632,7 @@ def test_a_one_agent_system_encodes_to_its_bare_prompt_with_or_without_steps() -
     )
     with_step = MAS(
         [solver],
-        code_nodes=[Code("count", uses="count_words", reads={"draft": "query"})],
+        script_nodes=[ScriptNode("count", uses="count_words", reads={"draft": "query"})],
         edges=[("count", "solver")],
         tools=[count_words],
         llm=scripted(),

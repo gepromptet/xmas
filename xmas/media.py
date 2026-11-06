@@ -5,14 +5,14 @@ its bytes: where the bytes are, their media type, and, for a local file, the
 size and sha256 they had when referenced. Reading a ref checks that sha256, so
 a file that changed since is refused rather than read.
 
-Bytes that xmas keeps itself (a model's picture, a tool's blob, a code node's
+Bytes that xmas keeps itself (a model's picture, a tool's blob, a script node's
 returned file) go into a content-addressed store, :func:`store`, so the same
 bytes are stored once and a rewrite is a new ref. Its location is
 configuration: the ``XMAS_STORE`` environment variable, else
 ``~/.cache/xmas/store``; never a spec key.
 
 :data:`Image`, :data:`Audio`, :data:`Document`, :data:`Table` and :data:`File`
-type a callable's parameters, so a code node's tool schema names the kind it reads.
+type a callable's parameters, so a script node's tool schema names the kind it reads.
 :class:`Capabilities` says which kinds a model takes and gives besides text.
 
 This is a leaf module: it imports no other xmas module.
@@ -39,10 +39,10 @@ if TYPE_CHECKING:  # pragma: no cover
 
 __all__ = [
     "ACCEPTABLE",
+    "ASSET_KINDS",
     "DOCUMENT_TYPES",
     "MAX_PART_BYTES",
     "PRODUCIBLE",
-    "REF_KINDS",
     "TABLE_TYPES",
     "TEXT_ONLY",
     "Audio",
@@ -62,7 +62,7 @@ __all__ = [
 ]
 
 
-REF_KINDS = ("image", "audio", "document", "table", "file")
+ASSET_KINDS = ("image", "audio", "document", "table", "file")
 """The value kinds a :class:`Ref` holds; ``file`` takes any ref."""
 
 DOCUMENT_TYPES = frozenset(
@@ -143,7 +143,7 @@ class Ref:
 
     @property
     def kind(self) -> str:
-        """The value kind of :attr:`media_type`, one of :data:`REF_KINDS`."""
+        """The value kind of :attr:`media_type`, one of :data:`ASSET_KINDS`."""
         return kind_of(self.media_type)
 
     @property
@@ -300,8 +300,8 @@ class Kind:
 
     def __post_init__(self) -> None:
         """Refuse a kind that is not a media kind."""
-        if self.kind not in REF_KINDS:
-            raise ValueError(f"Kind takes one of {', '.join(REF_KINDS)}, not {self.kind!r}")
+        if self.kind not in ASSET_KINDS:
+            raise ValueError(f"Kind takes one of {', '.join(ASSET_KINDS)}, not {self.kind!r}")
 
     def __get_pydantic_json_schema__(self, schema: CoreSchema, handler: GetJsonSchemaHandler) -> JsonSchemaValue:
         """Mark the ref's schema with ``"x-xmas-kind"``."""

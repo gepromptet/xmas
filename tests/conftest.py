@@ -27,7 +27,7 @@ from xmas.edges import Edge, EdgeKind
 from xmas.llms.api_llm import APILLM
 from xmas.llms.meta import CallMeta
 from xmas.media import Image, Ref
-from xmas.nodes import Code
+from xmas.nodes import ScriptNode
 from xmas.tools import Tool, ToolCallRequest, ToolSource, tool
 
 Turn = tuple[str, list[ToolCallRequest]]
@@ -268,7 +268,7 @@ VERDICT = {
 
 
 def worked_example(verdicts: Iterator[str], **kwargs: Any) -> MAS:
-    """The worked example without its module and web_fetch, the judge answering from ``verdicts``.
+    """The worked example without its subsystem and web_fetch, the judge answering from ``verdicts``.
 
     The writer drafts, ``count`` counts its words and the judge decides: back to
     the writer while the draft does not fit (at most 3 visits), else publish or
@@ -298,10 +298,10 @@ def worked_example(verdicts: Iterator[str], **kwargs: Any) -> MAS:
             Edge("judge", "publish", EdgeKind.SWITCH, switch="verdict.action"),
             Edge("judge", "apology", EdgeKind.ELSE),
         ],
-        code_nodes=[
-            Code("count", "count_words"),
-            Code("publish", "publish_text", {"text": "draft"}),
-            Code("apology", "apology_text"),
+        script_nodes=[
+            ScriptNode("count", "count_words"),
+            ScriptNode("publish", "publish_text", {"text": "draft"}),
+            ScriptNode("apology", "apology_text"),
         ],
         state={"published": {"merge": "last"}},
         llm=llm,
@@ -326,7 +326,7 @@ agents:
 - {name: figure_checker, model: judge-model, prompt: judge, for each: figure in plan.figures,
    reads: {planned: figure, shown: caption}, writes: {figure_verdict: json}, schema: {fits: {type: bool}, fix: {type: text}}}
 - {name: noter, model: writer-model, reads: [plan], writes: {notes: text}}
-code_nodes:
+script_nodes:
 - {name: render, uses: render_page, for each: page in plan.slides, retry: {outage: 1}}
 - {name: assemble, uses: assemble_deck}
 edges:
@@ -477,7 +477,7 @@ inputs: {plan: json, house: document}
 outputs: {review: text}
 agents:
 - {name: reviewer, model: vision-model, reads: {pages: slide_png, rules: house_rules, plan: plan}, writes: {review: text}}
-code_nodes:
+script_nodes:
 - {name: house_text, uses: document_text, reads: {source: house}, writes: {content: house_rules}}
 - {name: render, uses: render_pages}
 edges:

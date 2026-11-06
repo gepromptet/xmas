@@ -1,7 +1,7 @@
 # Answers with a shape
 
-This page goes on with the writer and the `count_words` code node of
-[Steps and values](steps-and-values.md). An agent can answer in JSON with fixed fields.
+This page goes on with the writer and the `count_words` script node of
+[Script nodes and values](scripts-and-values.md). An agent can answer in JSON with fixed fields.
 The schema names each field with a type and, optionally, what it means.
 
 ```python
@@ -19,7 +19,7 @@ judge = Agent(
 )
 mas = MAS(
     [writer, judge],
-    code_nodes=[Code("count", uses="count_words")],
+    script_nodes=[ScriptNode("count", uses="count_words")],
     edges=[("writer", "count"), ("count", "judge")],
     tools=[count_words],
     llm=llm,

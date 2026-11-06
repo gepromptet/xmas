@@ -3,10 +3,10 @@
 .. code-block:: text
 
     deck.mas/
-      xmas.yaml          the spec, MAS.to_dict(), without its prompts and callables; modules as paths
+      xmas.yaml          the spec, MAS.to_dict(), without its prompts and callables; subsystems as paths
       callables.yaml     the callables section, when there is one
       prompts/<name>.md  one prompt per agent, or per shared prompt name, as the model sees it
-      modules/<module>.mas/   each module's system, a bundle of its own (no lock)
+      subsystems/<subsystem>.mas/   each subsystem's system, a bundle of its own (no lock)
       optimize.yaml      optional settings for the optimizers; never written by save
       examples/*.yaml    optional warm-up cases; never written by save
       xmas.lock          the sha256 of every other file and of each python callable's source
@@ -83,7 +83,7 @@ LOCK = "xmas.lock"
 MAX_BYTES = 64 * 2**20
 
 PROMPTS = "prompts/"
-MODULES = "modules/"
+SUBSYSTEMS = "subsystems/"
 LOCK_NOTE = "# written by MAS.save; do not edit\n"
 OPTIMIZE_KEYS = ("optimizer", "task", "tune")
 TUNE = ("prompts", "models", "edges")
@@ -190,8 +190,8 @@ def bundle_files(spec: dict[str, Any], prefix: str) -> dict[str, bytes]:
                 for agent in sharers:
                     del agent["schema"]
             files[f"{prefix}{PROMPTS}{file_name(key, 'Prompt')}.md"] = dump_prompt(text, schema).encode("utf-8")
-        for box in spec.get("modules", []):
-            path = f"{MODULES}{file_name(box['name'], 'MASModule')}{SUFFIX}"
+        for box in spec.get("subsystem_nodes", []):
+            path = f"{SUBSYSTEMS}{file_name(box['name'], 'SubsystemNode')}{SUFFIX}"
             files.update(bundle_files(box["system"], f"{prefix}{path}/"))
             box["system"] = path
         callables = spec.pop("callables", None)
@@ -212,7 +212,7 @@ def spec_of(files: Mapping[str, bytes], prefix: str = "") -> dict[str, Any]:
         ValueError: For a missing file, a file that is not what its place says, a
             schema both in a prompt's front matter and in ``xmas.yaml``, the
             callables in both files, a prompt file no agent uses, a placeholder
-            that is not a read, or a module path outside the bundle.
+            that is not a read, or a subsystem path outside the bundle.
     """
     where = prefix + WIRING
     spec = wiring_of(files, prefix)
@@ -235,7 +235,7 @@ def spec_of(files: Mapping[str, bytes], prefix: str = "") -> dict[str, Any]:
     if not v2:
         return spec
     spec["prompts"] = {key: text for key, (text, _) in texts.items()}
-    for box in spec.get("modules") or []:
+    for box in spec.get("subsystem_nodes") or []:
         if isinstance(box, dict) and isinstance(box.get("system"), str):
             box["system"] = spec_of(files, inner(prefix, box["system"]))
     return {**{key: spec[key] for key in V2_KEYS if key in spec}, **{k: v for k, v in spec.items() if k not in V2_KEYS}}
@@ -317,7 +317,9 @@ def outside(path: str) -> bool:
 
 def inner(prefix: str, path: str) -> str:
     if outside(path):
-        raise ValueError(f"A module's system {path!r} is outside the bundle; it is a path such as 'modules/name.mas'.")
+        raise ValueError(
+            f"A subsystem's system {path!r} is outside the bundle; it is a path such as 'subsystems/name.mas'."
+        )
     return f"{prefix}{'/'.join(PurePosixPath(path).parts)}/"
 
 
@@ -409,17 +411,17 @@ def relock(folder: Path, code: Mapping[str, str | None]) -> None:
 
 
 def systems(mas: MAS, prefix: str = "") -> Iterator[tuple[str, MAS]]:
-    """Yield the system and each module's system at every depth, with the prefix its callables are named under."""
+    """Yield the system and each subsystem's system at every depth, with the prefix its callables are named under."""
     yield prefix, mas
-    for name, box in mas.modules.items():
+    for name, box in mas.subsystem_nodes.items():
         yield from systems(box.system, f"{prefix}{name}/")
 
 
 def code_hashes(mas: MAS) -> dict[str, str | None]:
-    """Return the sha256 of each python callable's source, a module's under ``box/name``; ``None`` without source."""
+    """Return the sha256 of each python callable's source, a subsystem's under ``box/name``; ``None`` without source."""
     hashes: dict[str, str | None] = {}
     for prefix, system in systems(mas):
-        used = [system.resolve_callable(step)[0] for step in system.code_nodes.values()]
+        used = [system.resolve_callable(step)[0] for step in system.script_nodes.values()]
         used += [
             item for agent in system.agents.values() if agent.tools for item, _ in system.resolve_tools(agent).values()
         ]
@@ -547,7 +549,7 @@ def read_zip(source: Path) -> dict[str, bytes]:
 
 def owned(path: str) -> bool:
     """Whether a save writes, rewrites and deletes the bundle file at ``path``."""
-    return path in (WIRING, CALLABLES) or path.startswith((PROMPTS, MODULES))
+    return path in (WIRING, CALLABLES) or path.startswith((PROMPTS, SUBSYSTEMS))
 
 
 def canonical(path: str, data: bytes) -> Any:

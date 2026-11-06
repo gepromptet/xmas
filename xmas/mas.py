@@ -19,7 +19,7 @@ from xmas import bundle, examples, runtime
 from xmas import verify as verification
 from xmas.agent import Agent
 from xmas.chains import ChainShape, ForEach
-from xmas.check import MERGE_LAST, SystemInfo, check_system, code_maps
+from xmas.check import MERGE_LAST, SystemInfo, check_system, script_maps
 from xmas.config import Config, ModelEntry, build_llms, resolve_names, tool_sources
 from xmas.edges import Edge, EdgeKind, dump_edges, parse_edges
 from xmas.graph import (
@@ -35,9 +35,9 @@ from xmas.graph import (
     validate_graph,
 )
 from xmas.health import HealthSettings
-from xmas.human import Asker, HumanAction
+from xmas.human import Asker, HumanNode
 from xmas.media import TEXT_ONLY, Capabilities
-from xmas.nodes import Code, MASModule
+from xmas.nodes import ScriptNode, SubsystemNode
 from xmas.predicates import parse_predicate
 from xmas.prompts import decode_prompts, encode_prompts
 from xmas.spec import VERSION_2, validate_spec, validate_spec_v2
@@ -76,8 +76,8 @@ class MAS(BasePredictor):
     the per-node model bindings, are all reachable as ordinary attributes, and
     :meth:`copy` is how candidates are derived from them.
 
-    A system is version 1 or version 2. Version 2 adds code nodes (nodes that run a
-    callable without a model), modules (nodes that run a whole system), human
+    A system is version 1 or version 2. Version 2 adds script nodes (nodes that run a
+    callable without a model), subsystems (nodes that run a whole system), human
     nodes (which ask a person), typed values, answer forms, declared inputs and
     conditional edges, and is checked by :func:`xmas.check.check_system` when
     it is built.
@@ -85,10 +85,10 @@ class MAS(BasePredictor):
     Attributes:
         agents: Agents keyed by name. Mutable, so ``mas.agents["solver"].prompt``
             is a supported edit.
-        code_nodes: Code nodes keyed by name; empty in version 1.
-        modules: Modules keyed by name; empty in version 1.
-        human_actions: Human actions keyed by name; empty in version 1.
-        detached: Names of the detached nodes (each node's ``detached``),
+        script_nodes: Script nodes keyed by name; empty in version 1.
+        subsystem_nodes: Subsystems keyed by name; empty in version 1.
+        human_nodes: Human nodes keyed by name; empty in version 1.
+        frozen: Names of the frozen nodes (each node's ``frozen``),
             which no optimizer may change.
         health: The thresholds of the run's health signals, or ``None`` for
             the defaults.
@@ -135,9 +135,9 @@ class MAS(BasePredictor):
     """
 
     agents: dict[str, Agent]
-    code_nodes: dict[str, Code]
-    modules: dict[str, MASModule]
-    human_actions: dict[str, HumanAction]
+    script_nodes: dict[str, ScriptNode]
+    subsystem_nodes: dict[str, SubsystemNode]
+    human_nodes: dict[str, HumanNode]
     health: HealthSettings | None
     edges: tuple[Edge, ...]
     inputs: dict[str, ValueType]
@@ -169,18 +169,18 @@ class MAS(BasePredictor):
         max_visits: int = 3,
         budget: Budget | None = None,
         *,
-        code_nodes: Sequence[Code] = (),
+        script_nodes: Sequence[ScriptNode] = (),
         inputs: Mapping[str, str | ValueType] | None = None,
         state: Mapping[str, Mapping[str, str]] | None = None,
         version: int | None = None,
-        modules: Sequence[MASModule] = (),
+        subsystem_nodes: Sequence[SubsystemNode] = (),
         health: HealthSettings | None = None,
         each: Mapping[str, str | Mapping[str, Any] | ForEach] | None = None,
         outputs: Mapping[str, str | ValueType] | None = None,
         retry: Mapping[str, Mapping[str, int]] | None = None,
         prompt_names: Mapping[str, str] | None = None,
         models: Mapping[str, Mapping[str, Any] | Capabilities] | None = None,
-        human_actions: Sequence[HumanAction] = (),
+        human_nodes: Sequence[HumanNode] = (),
         asker: Asker | None = None,
         store: Store | str | Path | None = None,
     ) -> None:
@@ -198,7 +198,7 @@ class MAS(BasePredictor):
             default_model: Name to record for the default model when serializing;
                 defaults to the model id ``llm`` reports.
             tools: Tools and tool sources (e.g. ``MCPTools``), mixed: the
-                callables registry ``Agent.tools`` and ``Code.uses`` resolve in.
+                callables registry ``Agent.tools`` and ``ScriptNode.uses`` resolve in.
                 Runtime state like ``llm``; never part of the spec.
             max_tool_rounds: Model turns per agent visit that may request tools,
                 before one last turn with the tools withheld.
@@ -206,17 +206,17 @@ class MAS(BasePredictor):
                 version 1 back edges close; a ``while`` edge carries its own.
             budget: Limits for each run, and for each item of a batch; a run
                 that reaches one ends with status ``over_budget``.
-            code_nodes: Nodes that run a registered callable.
+            script_nodes: Nodes that run a registered callable.
             inputs: The values a run starts with, ``{name: type}``; defaults to
                 ``{"query": "text"}``.
             state: ``{value: {"merge": "last"}}`` for each value several nodes
                 may write.
-            version: 1 or 2. Defaults to 2 when code nodes, modules, human actions,
+            version: 1 or 2. Defaults to 2 when script nodes, subsystems, human nodes,
                 conditional edges, a non-text agent, an agent reading a value under
-                another name, ``inputs``, ``state``, a detached node, ``each``,
+                another name, ``inputs``, ``state``, a frozen node, ``each``,
                 ``outputs``, ``retry``, ``prompt_names`` or ``models`` are
                 used, else 1.
-            modules: Nodes that run a whole version 2 system.
+            subsystem_nodes: Nodes that run a whole version 2 system.
             health: Thresholds of the health signals; ``None`` keeps the
                 defaults.
             each: ``{node: form}`` for every node of a ``for each`` chain, the
@@ -224,7 +224,7 @@ class MAS(BasePredictor):
                 ``"page in plan.slides"``, or its spec mapping.
             outputs: ``{name: type}`` of the values a run returns; several
                 nodes may then feed the end.
-            retry: ``{node: {error kind: attempts}}`` for agents and code nodes.
+            retry: ``{node: {error kind: attempts}}`` for agents and script nodes.
             prompt_names: ``{agent: prompt name}``: the agents that share one
                 prompt, which must hold the same text.
             models: ``{model name: {"accepts": [...], "produces": [...]}}``
@@ -233,7 +233,7 @@ class MAS(BasePredictor):
                 such as ``image``, and answers with. A model not named here
                 states its own through ``accepts`` and ``produces``
                 attributes, else reads and writes text only.
-            human_actions: Nodes that ask a person (:class:`~xmas.human.HumanAction`).
+            human_nodes: Nodes that ask a person (:class:`~xmas.human.HumanNode`).
             asker: How a run asks a person (:class:`~xmas.human.Asker`);
                 runtime state like ``llm``, never part of the spec.
             store: Where runs are logged and paused runs kept: a
@@ -254,12 +254,12 @@ class MAS(BasePredictor):
         self.retry = {name: dict(rules) for name, rules in (retry or {}).items()}
         self.prompt_names = dict(prompt_names or {})
         self.models = plain_models(models)
-        others: list[Code | MASModule | HumanAction] = [*code_nodes, *modules, *human_actions]
+        others: list[ScriptNode | SubsystemNode | HumanNode] = [*script_nodes, *subsystem_nodes, *human_nodes]
         self.version = self.infer_version(version, agents, others, inputs, state)
         refuse_unrunnable(self.version, agents, others, max_tool_rounds)
         super().__init__(llm=llm)  # type: ignore[arg-type]
 
-        self.index_nodes(agents, code_nodes, modules, human_actions)
+        self.index_nodes(agents, script_nodes, subsystem_nodes, human_nodes)
         self.llms = dict(llms or {})
         check_bindings(agents, self.llms)
         self.max_steps = max_steps
@@ -284,32 +284,37 @@ class MAS(BasePredictor):
     def index_nodes(
         self,
         agents: list[Agent],
-        code_nodes: Sequence[Code],
-        modules: Sequence[MASModule],
-        human_actions: Sequence[HumanAction],
+        script_nodes: Sequence[ScriptNode],
+        subsystem_nodes: Sequence[SubsystemNode],
+        human_nodes: Sequence[HumanNode],
     ) -> None:
         """Key the nodes of each kind by name; one name for two nodes is refused."""
-        nodes: list[Agent | Code | MASModule | HumanAction] = [*agents, *code_nodes, *modules, *human_actions]
+        nodes: list[Agent | ScriptNode | SubsystemNode | HumanNode] = [
+            *agents,
+            *script_nodes,
+            *subsystem_nodes,
+            *human_nodes,
+        ]
         names = [node.name for node in nodes]
         if len(set(names)) != len(names):
             raise ValueError(f"Node names must be unique: {sorted({n for n in names if names.count(n) > 1})}.")
         self.agents = {agent.name: agent for agent in agents}
-        self.code_nodes = {step.name: step for step in code_nodes}
-        self.modules = {box.name: box for box in modules}
-        self.human_actions = {human.name: human for human in human_actions}
+        self.script_nodes = {step.name: step for step in script_nodes}
+        self.subsystem_nodes = {box.name: box for box in subsystem_nodes}
+        self.human_nodes = {human.name: human for human in human_nodes}
 
     def infer_version(
         self,
         version: int | None,
         agents: list[Agent],
-        nodes: Sequence[Code | MASModule | HumanAction],
+        nodes: Sequence[ScriptNode | SubsystemNode | HumanNode],
         inputs: Mapping[str, str | ValueType] | None,
         state: Mapping[str, Mapping[str, str]] | None,
     ) -> int:
         """Return the version asked for, else 2 when a version 2 feature (``nodes`` among them) is used, else 1."""
         uses_v2 = (
             bool(nodes or self.each or self.outputs or self.retry or self.prompt_names)
-            or any(node.detached for node in [*agents, *nodes])
+            or any(node.frozen for node in [*agents, *nodes])
             or bool(self.models)
             or inputs is not None
             or state is not None
@@ -321,7 +326,7 @@ class MAS(BasePredictor):
             raise ValueError(f"version must be 1 or 2, not {inferred!r}.")
         if inferred == 1 and uses_v2:
             raise ValueError(
-                "Code nodes, modules, human actions, inputs, outputs, state, detached nodes, models, for each, retry, "
+                "Script nodes, subsystems, human nodes, inputs, outputs, state, frozen nodes, models, for each, retry, "
                 "shared prompts, read maps, conditional edges and typed writes need version 2."
             )
         return inferred
@@ -383,34 +388,36 @@ class MAS(BasePredictor):
         llm = self.llms.get(agent.model) if agent.model is not None else self.llm
         return select_tools(self.callables(), agent, llm)
 
-    def resolve_callable(self, step: Code) -> tuple[Tool, ToolSource]:
-        """Return the callable a code node uses, with the source that runs it, from the registry ``Agent.tools`` use."""
+    def resolve_callable(self, step: ScriptNode) -> tuple[Tool, ToolSource]:
+        """Return a script node's callable and the source that runs it, from the registry ``Agent.tools`` use."""
         index = self.callables()
         if step.uses not in index:
-            raise ValueError(f"Code {step.name!r} uses unknown callable {step.uses!r}; available: {sorted(index)}.")
+            raise ValueError(
+                f"ScriptNode {step.name!r} uses unknown callable {step.uses!r}; available: {sorted(index)}."
+            )
         return index[step.uses]
 
     @property
-    def nodes(self) -> dict[str, Agent | Code | MASModule | HumanAction]:
-        """Every node (agents, code nodes, modules, human actions), keyed by name in the topological order of a pass."""
-        everything: dict[str, Agent | Code | MASModule | HumanAction] = {
+    def nodes(self) -> dict[str, Agent | ScriptNode | SubsystemNode | HumanNode]:
+        """Every node (agents, script, subsystem and human nodes), keyed by name in the topological order of a pass."""
+        everything: dict[str, Agent | ScriptNode | SubsystemNode | HumanNode] = {
             **self.agents,
-            **self.code_nodes,
-            **self.modules,
-            **self.human_actions,
+            **self.script_nodes,
+            **self.subsystem_nodes,
+            **self.human_nodes,
         }
         return {name: everything[name] for name in agent_names(forward_graph(self.graph, self.while_edges))}
 
     @property
-    def detached(self) -> frozenset[str]:
-        """Names of the detached nodes, which no optimizer may change."""
-        everything: dict[str, Agent | Code | MASModule | HumanAction] = {
+    def frozen(self) -> frozenset[str]:
+        """Names of the frozen nodes, which no optimizer may change."""
+        everything: dict[str, Agent | ScriptNode | SubsystemNode | HumanNode] = {
             **self.agents,
-            **self.code_nodes,
-            **self.modules,
-            **self.human_actions,
+            **self.script_nodes,
+            **self.subsystem_nodes,
+            **self.human_nodes,
         }
-        return frozenset(name for name, node in everything.items() if node.detached)
+        return frozenset(name for name, node in everything.items() if node.frozen)
 
     @property
     def while_edges(self) -> tuple[tuple[str, str], ...]:
@@ -466,7 +473,7 @@ class MAS(BasePredictor):
             declared = {name: str(vtype) for name, vtype in self.inputs.items()}
             raise ValueError(
                 f"This system's inputs are {declared}, not {{'query': 'text'}}, and run(query) only runs on one "
-                "text query; use it as a module. run_state(values) runs it on its inputs."
+                "text query; use it as a subsystem. run_state(values) runs it on its inputs."
             )
 
     def run(self, query: str) -> Trace:
@@ -542,7 +549,7 @@ class MAS(BasePredictor):
     def stop(self, run_id: str, reason: str = "stopped") -> bool:
         """Stop a run by its id; ``False`` when no such run is running or paused.
 
-        A running run starts no call, code node or item after this, and its calls in
+        A running run starts no call, script node or item after this, and its calls in
         flight are cut; it returns a ``stopped`` trace. A paused run is marked
         stopped in the store, its open questions withdrawn through the asker.
         """
@@ -681,18 +688,18 @@ class MAS(BasePredictor):
         """
         v2 = self.version == VERSION_2
         return {
-            "code_nodes": tuple(self.code_nodes.values()),
+            "script_nodes": tuple(self.script_nodes.values()),
             "inputs": dict(self.inputs) if v2 else None,
             "state": {value: {"merge": rule} for value, rule in self.merges.items()} if v2 else None,
             "version": self.version,
-            "modules": tuple(self.modules.values()),
+            "subsystem_nodes": tuple(self.subsystem_nodes.values()),
             "health": self.health,
             "each": dict(self.each),
             "outputs": dict(self.outputs),
             "retry": {name: dict(rules) for name, rules in self.retry.items()},
             "prompt_names": dict(self.prompt_names),
             "models": dict(self.models),
-            "human_actions": tuple(self.human_actions.values()),
+            "human_nodes": tuple(self.human_nodes.values()),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -717,9 +724,9 @@ class MAS(BasePredictor):
                 self.spec_entry(name, agent_spec(agent, self.prompt_names.get(name)))
                 for name, agent in self.agents.items()
             ],
-            "code_nodes": [self.spec_entry(name, step.to_dict()) for name, step in self.code_nodes.items()],
-            "modules": [self.spec_entry(name, box.to_dict()) for name, box in self.modules.items()],
-            "human_actions": [self.spec_entry(name, human.to_dict()) for name, human in self.human_actions.items()],
+            "script_nodes": [self.spec_entry(name, step.to_dict()) for name, step in self.script_nodes.items()],
+            "subsystem_nodes": [self.spec_entry(name, box.to_dict()) for name, box in self.subsystem_nodes.items()],
+            "human_nodes": [self.spec_entry(name, human.to_dict()) for name, human in self.human_nodes.items()],
             "edges": dump_edges(self.edges),
             "state": {value: {"merge": rule} for value, rule in self.merges.items()},
             "health": health_spec(self.health),
@@ -763,9 +770,9 @@ class MAS(BasePredictor):
         return prompts
 
     def callable_specs(self) -> dict[str, dict[str, Any]]:
-        """Return the ``callables`` section: every callable a node or an edge condition uses, code nodes' first."""
+        """Return the ``callables`` section: every callable a node or an edge condition uses, script nodes' first."""
         index = self.callables()
-        used = [step.uses for step in self.code_nodes.values()] + [
+        used = [step.uses for step in self.script_nodes.values()] + [
             t for agent in self.agents.values() for t in agent.tools
         ]
         used += sorted({name for edge in self.edges if edge.when for name, _ in parse_predicate(edge.when).calls()})
@@ -806,11 +813,11 @@ class MAS(BasePredictor):
         :func:`~xmas.spec.validate_spec` as version 1.
 
         ``llm``, ``llms`` and ``tools`` resolve the spec's model bindings, the
-        agents' tool names and the code nodes' callables.
+        agents' tool names and the script nodes' callables.
 
         Raises:
             ValueError: If the spec is malformed, binds to an unsupplied model,
-                or (version 2) its ``callables`` do not match those supplied.
+                or its ``callables`` do not match those supplied.
         """
         if data.get("version") == VERSION_2:
             return cls.from_v2(data, llm=llm, llms=llms, tools=tools)
@@ -837,26 +844,18 @@ class MAS(BasePredictor):
         prompts = spec.get("prompts", {})
         entries = [
             *spec.get("agents", []),
-            *spec.get("code_nodes", []),
-            *spec.get("modules", []),
-            *spec.get("human_actions", []),
+            *spec.get("script_nodes", []),
+            *spec.get("subsystem_nodes", []),
+            *spec.get("human_nodes", []),
         ]
         agents = []
         for item in spec.get("agents", []):
             ((output, output_type),) = item["writes"].items()
             settings = {key: item.get(key) for key in ("tools", "model", "schema")}
             text = prompts[item.get("prompt", item["name"])]
-            detached = item.get("detached", False)
+            frozen = item.get("frozen", False)
             agents.append(
-                Agent(
-                    item["name"],
-                    text,
-                    output,
-                    item.get("reads"),
-                    output_type=output_type,
-                    detached=detached,
-                    **settings,
-                )
+                Agent(item["name"], text, output, item.get("reads"), output_type=output_type, frozen=frozen, **settings)
             )
         mas = cls(
             agents=agents,
@@ -865,30 +864,26 @@ class MAS(BasePredictor):
             llms=llms,
             default_model=spec.get("default_model"),
             tools=tools,
-            code_nodes=[
-                Code(
-                    item["name"],
-                    item["uses"],
-                    item.get("reads", {}),
-                    item.get("writes", {}),
-                    item.get("detached", False),
+            script_nodes=[
+                ScriptNode(
+                    item["name"], item["uses"], item.get("reads", {}), item.get("writes", {}), item.get("frozen", False)
                 )
-                for item in spec.get("code_nodes", [])
+                for item in spec.get("script_nodes", [])
             ],
             inputs=spec.get("inputs"),
             state=spec.get("state"),
             version=2,
-            modules=[
-                MASModule(
+            subsystem_nodes=[
+                SubsystemNode(
                     item["name"],
                     cls.from_v2(
                         item["system"], (llms or {}).get(item["system"].get("default_model"), llm), llms, tools
                     ),
                     item["reads"],
                     item["writes"],
-                    item.get("detached", False),
+                    item.get("frozen", False),
                 )
-                for item in spec.get("modules", [])
+                for item in spec.get("subsystem_nodes", [])
             ],
             health=health_settings(spec["health"]) if "health" in spec else None,
             each={item["name"]: item["for each"] for item in entries if "for each" in item},
@@ -896,7 +891,7 @@ class MAS(BasePredictor):
             retry={item["name"]: item["retry"] for item in entries if "retry" in item},
             prompt_names={item["name"]: item["prompt"] for item in spec.get("agents", []) if "prompt" in item},
             models=spec.get("models"),
-            human_actions=[HumanAction.from_dict(item) for item in spec.get("human_actions", [])],
+            human_nodes=[HumanNode.from_dict(item) for item in spec.get("human_nodes", [])],
         )
         mas.check_callables(spec.get("callables", {}))
         return mas
@@ -963,7 +958,7 @@ class MAS(BasePredictor):
 
         Raises:
             ValueError: If the name does not end in ``.mas``, the folder is not
-                a bundle, or a prompt or module name cannot be a file name.
+                a bundle, or a prompt or subsystem name cannot be a file name.
         """
         self.bundle = bundle.write(path, bundle.files_of(self), bundle.code_hashes(self), zipped=zipped)
         return self.bundle
@@ -1066,7 +1061,7 @@ class MAS(BasePredictor):
         sources = [*tools, *callable_sources(systems, tools, configured, trust=trust)]
         given = dict(llms or {})
         default_model = spec.get("default_model")
-        # each system's default, a module's too, is built unless llm= stands for them all
+        # each system's default, a subsystem's too, is built unless llm= stands for them all
         missing = sorted(bound_models(systems, with_defaults=llm is None) - set(given))
         if missing:
             given.update(build_llms(missing, declared_models(systems), configured()))
@@ -1099,8 +1094,8 @@ class MAS(BasePredictor):
     def describe(self) -> dict[str, Any]:
         """Return the system as plain data, for drawing it and naming it.
 
-        Every node with its kind, model, callable or inner system (a module's own
-        description), typed reads and writes, and whether it is detached; every
+        Every node with its kind, model, callable or inner system (a subsystem's own
+        description), typed reads and writes, and whether it is frozen; every
         edge with its condition, the implicit wiring marked ``"implicit":
         True``; ``"merge"`` or ``"join"`` for each node with several incoming
         edges; and an ``id``, the SHA-256 of the canonical JSON of the rest.
@@ -1109,7 +1104,7 @@ class MAS(BasePredictor):
 
         A chain node gains its ``"for each"``, an agent reading a value under
         another name its ``"placeholders"`` map, a node that retries its
-        ``"retry"``. A human action has its ``"form"``, and its ``"timeout_s"``
+        ``"retry"``. A human node has its ``"form"``, and its ``"timeout_s"``
         when it times out. Declared ``"outputs"`` and the chains, as ``"groups"``,
         appear only when there are any; a chain node's reads and writes have
         their types for one item. Declared ``"models"`` appear when there
@@ -1146,7 +1141,7 @@ class MAS(BasePredictor):
         description["id"] = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         return description
 
-    def describe_node(self, name: str, node: Agent | Code | MASModule | HumanAction) -> dict[str, Any]:
+    def describe_node(self, name: str, node: Agent | ScriptNode | SubsystemNode | HumanNode) -> dict[str, Any]:
         """Return one node of :meth:`describe`."""
         info = self.info
         chain = next((c for c in info.chains.values() if name in c.nodes), None) if info is not None else None
@@ -1163,30 +1158,30 @@ class MAS(BasePredictor):
                 "reads": typed(node.inputs),
                 "writes": {node.output: str(parse_type(node.output_type))},
                 "tools": list(node.tools),
-                "detached": node.detached,
+                "frozen": node.frozen,
             }
             if node.schema is not None:
                 entry["schema"] = deepcopy(node.schema)
-        elif isinstance(node, HumanAction):
-            entry = {"name": name, "kind": "human_action", "form": node.form, "reads": typed(node.reads.values())}
+        elif isinstance(node, HumanNode):
+            entry = {"name": name, "kind": "human", "form": node.form, "reads": typed(node.reads.values())}
             entry["writes"] = typed(node.written)
             if node.timeout_s is not None:
                 entry["timeout_s"] = node.timeout_s
-        elif isinstance(node, MASModule):
-            entry = {"name": name, "kind": "module", "reads": typed(node.reads.values())}
+        elif isinstance(node, SubsystemNode):
+            entry = {"name": name, "kind": "subsystem", "reads": typed(node.reads.values())}
             entry.update(writes=typed(node.writes.values()), system=node.system.describe())
         else:
-            reads, writes = code_maps(node, self.resolve_callable(node)[0])
-            entry = {"name": name, "kind": "code", "uses": node.uses, "reads": typed(reads.values())}
+            reads, writes = script_maps(node, self.resolve_callable(node)[0])
+            entry = {"name": name, "kind": "script", "uses": node.uses, "reads": typed(reads.values())}
             entry["writes"] = typed(writes.values())
         entry.update(self.node_settings(name, node))
         return entry
 
-    def node_settings(self, name: str, node: Agent | Code | MASModule | HumanAction) -> dict[str, Any]:
-        """Return what :meth:`describe_node` adds for any kind: detached, its chain form, read renames, retries."""
+    def node_settings(self, name: str, node: Agent | ScriptNode | SubsystemNode | HumanNode) -> dict[str, Any]:
+        """Return what :meth:`describe_node` adds for any kind: frozen, its chain form, read renames, retries."""
         settings: dict[str, Any] = {}
-        if node.detached:
-            settings["detached"] = True
+        if node.frozen:
+            settings["frozen"] = True
         if name in self.each:
             settings["for each"] = str(self.each[name])
         if isinstance(node, Agent) and node.renamed:
@@ -1225,10 +1220,10 @@ class MAS(BasePredictor):
         evaluate the other's prompt sets; an optimizer batches a population of
         prompt candidates through one predictor this way. Prompts travel in the
         run state, so they are absent. A version 2 system adds lines for its
-        code nodes, edges, answer types and forms, inputs, merges, outputs, read
-        maps, chain forms with ``at once`` and ``key``, retries, human actions
-        (every setting but the question text) and modules (each with its inner
-        structure, indented); detached nodes, health settings, prompt names,
+        script nodes, edges, answer types and forms, inputs, merges, outputs, read
+        maps, chain forms with ``at once`` and ``key``, retries, human nodes
+        (every setting but the question text) and subsystems (each with its inner
+        structure, indented); frozen nodes, health settings, prompt names,
         item budgets, models and questions change no compiled graph and stay
         out.
         """
@@ -1240,8 +1235,8 @@ class MAS(BasePredictor):
         if self.info is None:
             return "\n".join(lines)
         lines += [
-            f"code node {step.name} uses={step.uses} reads={canonical(step.reads)} writes={canonical(step.writes)}"
-            for step in sorted(self.code_nodes.values(), key=lambda s: s.name)
+            f"script node {step.name} uses={step.uses} reads={canonical(step.reads)} writes={canonical(step.writes)}"
+            for step in sorted(self.script_nodes.values(), key=lambda s: s.name)
         ]
         lines += [f"edge {canonical(dataclasses.astuple(edge))}" for edge in self.edges]
         lines += [
@@ -1259,12 +1254,12 @@ class MAS(BasePredictor):
         lines += [f"each {name} {f} at_once={f.at_once} key={f.key}" for name, f in sorted(self.each.items())]
         lines += [f"retry {name} {canonical(rules)}" for name, rules in sorted(self.retry.items())]
         lines += [
-            f"human action {name} "
-            f"{canonical({k: v for k, v in human.to_dict().items() if k not in ('name', 'question', 'detached')})}"
-            for name, human in sorted(self.human_actions.items())
+            f"human {name} "
+            f"{canonical({k: v for k, v in human.to_dict().items() if k not in ('name', 'question', 'frozen')})}"
+            for name, human in sorted(self.human_nodes.items())
         ]
-        for box in sorted(self.modules.values(), key=lambda b: b.name):
-            lines.append(f"module {box.name} reads={canonical(box.reads)} writes={canonical(box.writes)}")
+        for box in sorted(self.subsystem_nodes.values(), key=lambda b: b.name):
+            lines.append(f"subsystem {box.name} reads={canonical(box.reads)} writes={canonical(box.writes)}")
             lines += [f"  {line}" for line in box.system.structure.splitlines()]
         return "\n".join(lines)
 
@@ -1305,15 +1300,15 @@ def agent_spec(agent: Agent, prompt: str | None) -> dict[str, Any]:
         data["tools"] = list(agent.tools)
     if agent.schema is not None:
         data["schema"] = deepcopy(agent.schema)
-    if agent.detached:
-        data["detached"] = True
+    if agent.frozen:
+        data["frozen"] = True
     return data
 
 
 def spec_systems(spec: Mapping[str, Any]) -> Iterator[Mapping[str, Any]]:
-    """Yield a spec and each module's inner spec, at every depth."""
+    """Yield a spec and each subsystem's inner spec, at every depth."""
     yield spec
-    for box in spec.get("modules") or []:
+    for box in spec.get("subsystem_nodes") or []:
         if isinstance(box, dict) and isinstance(box.get("system"), dict):
             yield from spec_systems(box["system"])
 
@@ -1332,7 +1327,10 @@ def plain_models(models: Mapping[str, Mapping[str, Any] | Capabilities] | None) 
 
 
 def refuse_unrunnable(
-    version: int, agents: Sequence[Agent], others: Sequence[Code | MASModule | HumanAction], max_tool_rounds: int
+    version: int,
+    agents: Sequence[Agent],
+    others: Sequence[ScriptNode | SubsystemNode | HumanNode],
+    max_tool_rounds: int,
 ) -> None:
     """Refuse a system without a node (an agent, in version 1), or a negative ``max_tool_rounds``."""
     if not agents and (version == 1 or not others):
@@ -1371,7 +1369,7 @@ def bound_models(systems: Sequence[Mapping[str, Any]], *, with_defaults: bool) -
 
 
 def declared_models(systems: Sequence[Mapping[str, Any]]) -> dict[str, Capabilities]:
-    """Return the ``models:`` entries of ``systems``; an outer entry wins over a module's."""
+    """Return the ``models:`` entries of ``systems``; an outer entry wins over a subsystem's."""
     models: dict[str, Capabilities] = {}
     for system in reversed(systems):
         entries = system.get("models") or {}
@@ -1380,9 +1378,9 @@ def declared_models(systems: Sequence[Mapping[str, Any]]) -> dict[str, Capabilit
 
 
 def built_systems(mas: MAS) -> Iterator[MAS]:
-    """Yield a system and each module's system, at every depth."""
+    """Yield a system and each subsystem's system, at every depth."""
     yield mas
-    for box in mas.modules.values():
+    for box in mas.subsystem_nodes.values():
         yield from built_systems(box.system)
 
 
@@ -1510,12 +1508,12 @@ class ChainSystem(MAS):
             tools=outer.tools,
             max_tool_rounds=outer.max_tool_rounds,
             max_visits=outer.max_visits,
-            code_nodes=[outer.code_nodes[name] for name in shape.nodes if name in outer.code_nodes],
+            script_nodes=[outer.script_nodes[name] for name in shape.nodes if name in outer.script_nodes],
             inputs=inputs,
             state={value: {"merge": rule} for value, rule in outer.merges.items() if value in written},
             version=2,
-            modules=[outer.modules[name] for name in shape.nodes if name in outer.modules],
-            human_actions=[outer.human_actions[name] for name in shape.nodes if name in outer.human_actions],
+            subsystem_nodes=[outer.subsystem_nodes[name] for name in shape.nodes if name in outer.subsystem_nodes],
+            human_nodes=[outer.human_nodes[name] for name in shape.nodes if name in outer.human_nodes],
             health=outer.health,
             outputs=written,
             retry={name: rules for name, rules in outer.retry.items() if name in shape.nodes},
@@ -1534,8 +1532,8 @@ class ChainSystem(MAS):
         """Resolve an agent's tools through the outer system."""
         return self.outer.resolve_tools(agent)
 
-    def resolve_callable(self, step: Code) -> tuple[Tool, ToolSource]:
-        """Resolve a code node's callable through the outer system."""
+    def resolve_callable(self, step: ScriptNode) -> tuple[Tool, ToolSource]:
+        """Resolve a script node's callable through the outer system."""
         return self.outer.resolve_callable(step)
 
     def resolve_llm(self, agent: Agent) -> BaseLLM:

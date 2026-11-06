@@ -5,8 +5,8 @@ prompts, topology and model bindings, which per the design principles is the
 framework-agnostic artefact an optimization run produces. No LLM object, no
 compiled graph and no callable is ever part of it.
 
-A ``version: 2`` spec adds code nodes, modules, typed values, answer forms, the edge
-forms of :mod:`xmas.edges`, ``detached`` nodes and ``health`` settings, and keeps
+A ``version: 2`` spec adds script nodes, subsystems, typed values, answer forms, the edge
+forms of :mod:`xmas.edges`, ``frozen`` nodes and ``health`` settings, and keeps
 its prompts in a top-level ``prompts`` section. It may declare ``outputs``; a
 node may run ``for each`` item of a list and ``retry`` on some error kinds; an
 agent may read values under placeholders of other names and share a prompt
@@ -15,8 +15,8 @@ bound model name, which kinds beyond text the model ``accepts`` and
 ``produces``, the catalogue id it stands for (``model``, default the name)
 and model parameters such as ``temperature``; never a URL or a key. A
 callable names code by ``import`` or a tool server by name (``server``), and
-may bind constant ``params``. Its ``human_actions`` are the nodes that ask a person
-(:class:`xmas.human.HumanAction`), and an edge may be one of a ``first of`` race.
+may bind constant ``params``. Its ``human_nodes`` are the nodes that ask a person
+(:class:`xmas.human.HumanNode`), and an edge may be one of a ``first of`` race.
 """
 
 from __future__ import annotations
@@ -41,9 +41,9 @@ V2_KEYS: dict[str, Any] = {
     "inputs": dict,
     "outputs": dict,
     "agents": list,
-    "code_nodes": list,
-    "modules": list,
-    "human_actions": list,
+    "script_nodes": list,
+    "subsystem_nodes": list,
+    "human_nodes": list,
     "edges": list,
     "state": dict,
     "health": dict,
@@ -68,11 +68,11 @@ ENTRIES: dict[str, tuple[str, frozenset[str], dict[str, Any]]] = {
             "tools": list,
             "schema": dict,
             "retry": dict,
-            "detached": bool,
+            "frozen": bool,
         },
     ),
-    "code_nodes": (
-        "Code",
+    "script_nodes": (
+        "ScriptNode",
         frozenset({"uses"}),
         {
             "name": str,
@@ -81,16 +81,16 @@ ENTRIES: dict[str, tuple[str, frozenset[str], dict[str, Any]]] = {
             "reads": dict,
             "writes": dict,
             "retry": dict,
-            "detached": bool,
+            "frozen": bool,
         },
     ),
-    "modules": (
-        "MASModule",
+    "subsystem_nodes": (
+        "SubsystemNode",
         frozenset({"reads", "writes", "system"}),
-        {"name": str, "for each": (str, dict), "reads": dict, "writes": dict, "system": dict, "detached": bool},
+        {"name": str, "for each": (str, dict), "reads": dict, "writes": dict, "system": dict, "frozen": bool},
     ),
-    "human_actions": (
-        "HumanAction",
+    "human_nodes": (
+        "HumanNode",
         frozenset({"form", "writes"}),
         {
             "name": str,
@@ -105,7 +105,7 @@ ENTRIES: dict[str, tuple[str, frozenset[str], dict[str, Any]]] = {
             "edits": str,
             "timeout_s": (int, float),
             "default": dict,
-            "detached": bool,
+            "frozen": bool,
         },
     ),
 }
@@ -179,7 +179,7 @@ def validate_spec_v2(data: dict[str, Any]) -> dict[str, Any]:
     """
     check_fields(data, "Spec", V2_KEYS)
     check_version_is_2(data)
-    check_modules_hold_specs(data)
+    check_subsystems_hold_specs(data)
     check_entries(data)
     check_callables(data)
     check_fields(data.get("health", {}), "Spec 'health'", HEALTH)
@@ -195,18 +195,18 @@ def check_version_is_2(data: dict[str, Any]) -> None:
         raise ValueError(f"A version 2 spec needs 'version: 2', not {data.get('version')!r}.")
 
 
-def check_modules_hold_specs(data: dict[str, Any]) -> None:
-    """Refuse a module that names its system by path: from_dict needs the system's spec itself."""
-    for entry in data.get("modules", []):
+def check_subsystems_hold_specs(data: dict[str, Any]) -> None:
+    """Refuse a subsystem that names its system by path: from_dict needs the system's spec itself."""
+    for entry in data.get("subsystem_nodes", []):
         if isinstance(entry, dict) and isinstance(entry.get("system"), str):
             raise ValueError(
-                f"MASModule {entry.get('name')!r} names its system {entry['system']!r}: "
-                "MAS.load reads a bundle's modules; from_dict needs the system's spec."
+                f"SubsystemNode {entry.get('name')!r} names its system {entry['system']!r}: "
+                "MAS.load reads a bundle's subsystems; from_dict needs the system's spec."
             )
 
 
 def check_entries(data: dict[str, Any]) -> None:
-    """Check the keys and value types of each agent, code node, module and human."""
+    """Check the keys and value types of each agent, script node, subsystem and human."""
     for section, (label, required, fields) in ENTRIES.items():
         for index, entry in enumerate(data.get(section, [])):
             if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):

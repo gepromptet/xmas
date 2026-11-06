@@ -1,8 +1,8 @@
 """Topology: the graph a MAS executes, and the questions asked of it.
 
-The topology is a ``networkx.DiGraph`` whose nodes are node names, agents and
-(version 2) code nodes alike, plus two sentinels. The functions here speak of agents
-because version 1 has no other node; they treat every node the same. Keeping it
+The topology is a ``networkx.DiGraph`` whose nodes are the names of nodes of
+every kind, plus two sentinels. The functions here speak of agents, but they treat
+every node the same. Keeping it
 a plain nx graph is deliberate: a topology optimizer is then an ordinary
 graph-rewriting component and needs nothing from xmas to work.
 """
@@ -58,7 +58,7 @@ def build_graph(
     from :data:`START`. An edge in ``errors`` (a version 2 ``on error`` edge)
     is taken only when a visit fails, so a node whose out-edges are all error
     edges is wired to :data:`END` as well: a visit that succeeds ends there.
-    ``agents`` holds every node name, code nodes included; an edge may name a
+    ``agents`` holds every node name, script nodes included; an edge may name a
     sentinel to override the implicit wiring. An edge naming an unknown node,
     or a node named like a sentinel, raises ValueError.
     """
